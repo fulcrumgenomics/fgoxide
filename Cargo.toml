@@ -1,0 +1,28 @@
+[package]
+name = "fgoxide"
+version = "0.1.0"
+edition = "2021"
+authors = [
+    "Tim Fennell <tim@fulcrumgenomics.com",
+    "Seth Stadick <seth@fulcrumgenomics.com>"
+]
+license = "MIT"
+repository = "https://github.com/fulcrumgenomics/fgoxide"
+description = "Utility/QoL code for writing command-line / file processing tools."
+documentation = "https://docs.rs/fgoxide"
+readme = "README.md"
+categories = ["rust-patterns"]
+keywords = ["utilities"]
+
+[dependencies]
+thiserror = "^1"
+
+# For auto-gzip handing of files
+flate2 = "^1"
+
+# For auto-serialization of structs to csv/tsv
+csv = "^1"
+serde = { version = "^1.0.123", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3.2.0"
