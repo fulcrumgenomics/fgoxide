@@ -15,4 +15,4 @@ This crate aims to collect those usage patterns, refine the APIs around them, an
 
 ## Documentation and Examples
 
-Please see the generated [Rust Docs](https://docs.rs/fgoxide-commons).
+Please see the generated [Rust Docs](https://docs.rs/fgoxide).
