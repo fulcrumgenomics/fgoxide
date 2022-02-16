@@ -7,7 +7,7 @@ pub mod io;
 
 use thiserror::Error;
 
-/// Error types for [`fgoxide`]
+/// Error types for `fgoxide`
 #[derive(Error, Debug)]
 pub enum FgError {
     #[error("Error invoking underlying IO operation.")]

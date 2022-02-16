@@ -1,10 +1,10 @@
 //! Helpers and type definitions for extended I/O functionality
 //!
-//! The [`fgoxide::io`] module contains a number of types and functions to assist with common
-//! I/O activities, such a slurping a file by lines, or writing a colleciotn of `Serializable`
+//! The `io` module contains a number of types and functions to assist with common
+//! I/O activities, such a slurping a file by lines, or writing a collection of `Serializable`
 //! objects to a path.
 //!
-//! The two core parts of this module are teh [`Io`] and [`Delim`] structs. These structs provide
+//! The two core parts of this module are teh [`Io`] and [`DelimFile`] structs. These structs provide
 //! methods for reading and writing to files that transparently handle compression based on the
 //! file extension of the path given to the methods.
 //!
