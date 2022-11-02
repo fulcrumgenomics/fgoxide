@@ -207,7 +207,7 @@ impl DelimFile {
     }
 
     /// Reads structs implementing `[Deserialize]` from a file with the given separators between fields.
-    /// If `quote` is true then fields surrounded by quotes are parsed, otherwise quotes are not 
+    /// If `quote` is true then fields surrounded by quotes are parsed, otherwise quotes are not
     /// considered.
     pub fn read<D, P>(&self, path: &P, delimiter: u8, quote: bool) -> Result<Vec<D>>
     where
