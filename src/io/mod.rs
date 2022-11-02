@@ -206,8 +206,9 @@ impl DelimFile {
         self.write(path, recs, b',', true)
     }
 
-    /// Writes a series of one or more structs to a delimited file.  If `quote` is true then fields
-    /// will be quoted as necessary, otherwise they will never be quoted.
+    /// Reads structs implementing `[Deserialize]` from a file with the given separators between fields.
+    /// If `quote` is true then fields surrounded by quotes are parsed, otherwise quotes are not
+    /// considered.
     pub fn read<D, P>(&self, path: &P, delimiter: u8, quote: bool) -> Result<Vec<D>>
     where
         D: DeserializeOwned,
