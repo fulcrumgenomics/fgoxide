@@ -47,7 +47,7 @@ use std::path::Path;
 
 use crate::{FgError, Result};
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{de::DeserializeOwned, Serialize};
@@ -94,7 +94,7 @@ impl Io {
     {
         let file = File::open(p).map_err(FgError::IoError)?;
         let read: Box<dyn Read> =
-            if Io::is_gzip_path(p) { Box::new(GzDecoder::new(file)) } else { Box::new(file) };
+            if Io::is_gzip_path(p) { Box::new(MultiGzDecoder::new(file)) } else { Box::new(file) };
 
         Ok(BufReader::new(read))
     }
