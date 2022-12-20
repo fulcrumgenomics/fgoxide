@@ -74,7 +74,7 @@ impl Default for Io {
 
 impl Io {
     /// Creates a new Io instance with the given compression level.
-    fn new(compression: u32, buffer_size: usize) -> Io {
+    pub fn new(compression: u32, buffer_size: usize) -> Io {
         Io { compression: flate2::Compression::new(compression), buffer_size }
     }
 
