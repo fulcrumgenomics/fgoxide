@@ -42,12 +42,12 @@
 //! }
 //! ```
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use crate::{FgError, Result};
 use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
-use flate2::read::MultiGzDecoder;
+use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{de::DeserializeOwned, Serialize};
@@ -55,23 +55,27 @@ use serde::{de::DeserializeOwned, Serialize};
 /// The set of file extensions to treat as GZIPPED
 const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
 
+/// The default buffer size when creating buffered readers/writers
+const BUFFER_SIZE: usize = 64 * 1024;
+
 /// Unit-struct that contains associated functions for reading and writing Structs to/from
 /// unstructured files.
 pub struct Io {
     compression: Compression,
+    buffer_size: usize,
 }
 
 /// Returns a Default implementation that will compress to gzip level 5.
 impl Default for Io {
     fn default() -> Self {
-        Io::new(5)
+        Io::new(5, BUFFER_SIZE)
     }
 }
 
 impl Io {
     /// Creates a new Io instance with the given compression level.
-    fn new(compression: u32) -> Io {
-        Io { compression: flate2::Compression::new(compression) }
+    pub fn new(compression: u32, buffer_size: usize) -> Io {
+        Io { compression: flate2::Compression::new(compression), buffer_size }
     }
 
     /// Returns true if the path ends with a recognized GZIP file extension
@@ -88,15 +92,18 @@ impl Io {
 
     /// Opens a file for reading.  Transparently handles reading gzipped files based
     /// extension.
-    pub fn new_reader<P>(&self, p: &P) -> Result<BufReader<Box<dyn Read>>>
+    pub fn new_reader<P>(&self, p: &P) -> Result<Box<dyn BufRead>>
     where
         P: AsRef<Path>,
     {
         let file = File::open(p).map_err(FgError::IoError)?;
-        let read: Box<dyn Read> =
-            if Io::is_gzip_path(p) { Box::new(MultiGzDecoder::new(file)) } else { Box::new(file) };
+        let buf = BufReader::with_capacity(self.buffer_size, file);
 
-        Ok(BufReader::new(read))
+        if Self::is_gzip_path(p) {
+            Ok(Box::new(BufReader::with_capacity(self.buffer_size, MultiGzDecoder::new(buf))))
+        } else {
+            Ok(Box::new(buf))
+        }
     }
 
     /// Opens a file for writing. Transparently handles writing GZIP'd data if the file
@@ -112,7 +119,7 @@ impl Io {
             Box::new(file)
         };
 
-        Ok(BufWriter::new(write))
+        Ok(BufWriter::with_capacity(self.buffer_size, write))
     }
 
     /// Reads lines from a file into a Vec
