@@ -1,34 +1,19 @@
 use std::any::Any;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::vec::IntoIter;
 
-/// Takes the type returned by a catch unwind block and attempts to convert it into a string.
-/// If it fails at this returns "Unknown Source of Error", otherwise returns the String it
-/// extracted.
-fn extract_info_from_catch_unwind_panic(e: Box<dyn Any + Send>) -> String {
-    match e.downcast::<String>() {
-        Ok(v) => *v,
-        Err(e2) => {
-            let s = match e2.downcast::<&'static str>() {
-                Ok(v) => *v,
-                _ => "Unknown Source of Error",
-            };
-            s.to_owned()
-        }
-    }
-}
 
+// type aliased to get clippy to not think this is too complex
+type PanicUnwindErr = Box<dyn Any + Send>;
 /// Iterator extension that spawns an additional thread to read-ahead in the iterator. Sends
 /// results back to this object via a channel and returns them in the same manner as a normal
 /// iterator
 pub struct ChunkedReadAheadIterator<T: Send + 'static> {
     /// The recieving object that recieves chunks of ``T``. TODO - make this a Vec<T> when adding
     /// chunking.
-    receiver: Option<Receiver<Option<Vec<T>>>>,
-    /// The handle to the thread that was spawned to read ahead on the iterator.
-    join_handle: Option<JoinHandle<()>>,
+    receiver: Option<Receiver<Result<Vec<T>, PanicUnwindErr>>>,
     /// The most recent chunk recieved as an iterator. Used to produce owned ``T`` objects from
     /// the chunk
     current_chunk: IntoIter<T>,
@@ -59,10 +44,10 @@ where
 
         // Create our spawned thread, holding on to the resulting handle for downstream error
         // management.
-        let join_handle: JoinHandle<()> = thread::Builder::new()
+        thread::Builder::new()
             .name("chunked_read_ahead_thread".to_owned())
             .spawn(move || {
-                loop {
+                'chunk_loop: loop {
                     let mut chunk = Vec::with_capacity(chunk_size);
                     for _ in 0..chunk_size {
                         match catch_unwind(AssertUnwindSafe(|| inner.by_ref().next())) {
@@ -70,26 +55,22 @@ where
                             Ok(None) => break,
                             Err(e) => {
                                 sender
-                                    .send(Some(chunk))
+                                    .send(Ok(chunk))
                                     .expect("Error sending final chunk before internal panic");
-                                sender
-                                    .send(None)
-                                    .expect("Error sending final None before internal panic");
-                                panic!("{}", extract_info_from_catch_unwind_panic(e));
+                                sender.send(Err(e)).expect("Error sending internal panic result");
+                                break 'chunk_loop;
                             }
                         }
                     }
                     if chunk.is_empty() {
                         break;
                     }
-                    let send_result = sender.send(Some(chunk));
+                    let send_result = sender.send(Ok(chunk));
                     if send_result.is_err() {
                         // TODO - Logging?
                         break;
                     }
                 }
-                // TODO - Logging?
-                let _send_result = sender.send(None);
             })
             .expect("failed to spawn chunked read ahead thread");
 
@@ -97,7 +78,6 @@ where
         Self {
             current_chunk: Vec::new().into_iter(),
             receiver: Some(receiver),
-            join_handle: Some(join_handle),
         }
     }
 }
@@ -109,19 +89,6 @@ where
     fn drop(&mut self) {
         // Make sure our reciever is dropped so our spawned thread shuts down.
         self.receiver = None;
-
-        // Get the error value out of our join handle. To do this we need to take ownership of
-        // the handle from ``self``, as otherwise it will not let us call ``join``.
-        if let Some(join_handle) = Option::take(&mut self.join_handle) {
-            // Call join, and if there was a resulting panic in the spawned thread raise that
-            // panic to the main thread.
-            // Note that any modifications to this in future should be done with extreme care,
-            // as `join`ing inside a `drop` block is a particularly potent foot-gun in Rust.
-            // See https://stackoverflow.com/questions/41331577/joining-a-thread-in-a-method-that-takes-mut-self-like-drop-results-in-cann/42791007#42791007
-            if let Err(e) = join_handle.join() {
-                panic!("{}", extract_info_from_catch_unwind_panic(e));
-            }
-        }
     }
 }
 
@@ -142,25 +109,38 @@ where
             // Try to grab a new chunk, and panic if there are no chunks left (note that
             // ``recv`` is blocking, so this will only return an error if the sender has been
             // dropped and there are no more elements in the channel.)
-            let opt_r = self
-                .receiver
-                .as_ref()
-                .and_then(|r| r.recv().expect("recv of iterator value failed"));
-            // If the new chunk is present, convert it to an iterator, store it on ``self``,
-            // and return its next value ( shutting down our reciever if the next valus is None).
-            // If the new chunk was not present (i.e. sender sent None, shut down our reciever and
-            // exit
-            if let Some(next_chunk) = opt_r {
-                self.current_chunk = next_chunk.into_iter();
-                if let Some(result) = self.current_chunk.next() {
-                    Some(result)
+            let res_r = if let Some(r) = self.receiver.as_ref() {
+                // Clippy incorrectly marks this as something that can be done with a question mark
+                // so ignore that lint
+                #[allow(clippy::question_mark)]
+                if let Ok(result) = r.recv() {
+                    result
                 } else {
-                    self.receiver = None;
-                    None
+                    return None
                 }
             } else {
-                self.receiver = None;
-                None
+                let box_message: Box<dyn Any + Send> =
+                    Box::new("Reciever is None yet iteration is ongoing.");
+                Err(box_message)
+            };
+            // If the new chunk is present, convert it to an iterator, store it on ``self``,
+            // and return its next value ( shutting down our reciever if the next value is an Err).
+            // If the first value of the new chunk was not present
+            // (i.e. iterator immediately sent None, shut down our reciever and exit iteration
+            match res_r {
+                Ok(next_chunk) => {
+                    self.current_chunk = next_chunk.into_iter();
+                    if let Some(result) = self.current_chunk.next() {
+                        Some(result)
+                    } else {
+                        self.receiver = None;
+                        None
+                    }
+                }
+                Err(e) => {
+                    self.receiver = None;
+                    resume_unwind(e);
+                }
             }
         }
     }
