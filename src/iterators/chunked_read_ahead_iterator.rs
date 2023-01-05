@@ -119,10 +119,9 @@ where
                     Box::new("Reciever is None yet iteration is ongoing.");
                 Err(box_message)
             };
-            // If the new chunk is present, convert it to an iterator, store it on ``self``,
-            // and return its next value ( shutting down our reciever if the next value is an Err).
-            // If the first value of the new chunk was not present
-            // (i.e. iterator immediately sent None, shut down our reciever and exit iteration
+            // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
+            // and return its next value ( shutting down our reciever if the next value is None).
+            // if the new chunk is an Err, raise it to the main thread.
             match res_r {
                 Ok(next_chunk) => {
                     self.current_chunk = next_chunk.into_iter();
