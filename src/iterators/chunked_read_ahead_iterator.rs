@@ -4,7 +4,6 @@ use std::sync::mpsc::{sync_channel, Receiver};
 use std::thread;
 use std::vec::IntoIter;
 
-
 // type aliased to get clippy to not think this is too complex
 type PanicUnwindErr = Box<dyn Any + Send>;
 /// Iterator extension that spawns an additional thread to read-ahead in the iterator. Sends
@@ -75,10 +74,7 @@ where
             .expect("failed to spawn chunked read ahead thread");
 
         // Store the necessary objects on ``Self``
-        Self {
-            current_chunk: Vec::new().into_iter(),
-            receiver: Some(receiver),
-        }
+        Self { current_chunk: Vec::new().into_iter(), receiver: Some(receiver) }
     }
 }
 
@@ -116,7 +112,7 @@ where
                 if let Ok(result) = r.recv() {
                     result
                 } else {
-                    return None
+                    return None;
                 }
             } else {
                 let box_message: Box<dyn Any + Send> =
