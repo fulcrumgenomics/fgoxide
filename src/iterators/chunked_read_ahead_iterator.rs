@@ -134,7 +134,7 @@ where
                 // join handle is not ``Copy`` or ``Clone`` and we need ownership of it to be able
                 // to join on it, hence the optional field and taking it off the iterator struct.
                 if let Some(join_handle) = self.join_handle.take() {
-                    if let Err(e) =  join_handle.join() {
+                    if let Err(e) = join_handle.join() {
                         resume_unwind(e)
                     }
                 }
@@ -419,7 +419,6 @@ mod tests {
         }
     }
     impl Drop for ExitFailingIter {
-
         fn drop(&mut self) {
             panic!("expected error message")
         }
