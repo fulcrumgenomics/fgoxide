@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::vec::IntoIter;
 
 // type aliased to get clippy to not think this is too complex
