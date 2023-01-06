@@ -92,7 +92,7 @@ impl Io {
 
     /// Opens a file for reading.  Transparently handles reading gzipped files based
     /// extension.
-    pub fn new_reader<P>(&self, p: &P) -> Result<Box<dyn BufRead>>
+    pub fn new_reader<P>(&self, p: &P) -> Result<Box<dyn BufRead + Send>>
     where
         P: AsRef<Path>,
     {
@@ -108,12 +108,12 @@ impl Io {
 
     /// Opens a file for writing. Transparently handles writing GZIP'd data if the file
     /// ends with a recognized GZIP extension.
-    pub fn new_writer<P>(&self, p: &P) -> Result<BufWriter<Box<dyn Write>>>
+    pub fn new_writer<P>(&self, p: &P) -> Result<BufWriter<Box<dyn Write + Send>>>
     where
         P: AsRef<Path>,
     {
         let file = File::create(p).map_err(FgError::IoError)?;
-        let write: Box<dyn Write> = if Io::is_gzip_path(p) {
+        let write: Box<dyn Write + Send> = if Io::is_gzip_path(p) {
             Box::new(GzEncoder::new(file, self.compression))
         } else {
             Box::new(file)
