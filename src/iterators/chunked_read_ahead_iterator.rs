@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::vec::IntoIter;
 
 // type aliased to get clippy to not think this is too complex
@@ -45,6 +45,8 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 pub struct ChunkedReadAheadIterator<T: Send + 'static> {
     /// The recieving object that recieves chunks of ``T``.
     receiver: Receiver<Result<Vec<T>, PanicUnwindErr>>,
+    /// The handle to the thread that was spawned to read ahead on the iterator.
+    join_handle: Option<JoinHandle<()>>,
     /// The most recent chunk recieved as an iterator. Used to produce owned ``T`` objects from
     /// the chunk
     current_chunk: IntoIter<T>,
@@ -73,7 +75,7 @@ where
 
         // Create our spawned thread, holding on to the resulting handle for downstream error
         // management.
-        thread::Builder::new()
+        let join_handle = thread::Builder::new()
             .name("chunked_read_ahead_thread".to_owned())
             .spawn(move || {
                 'chunk_loop: loop {
@@ -100,7 +102,7 @@ where
             .expect("failed to spawn chunked read ahead thread");
 
         // Store the necessary objects on ``Self``
-        Self { receiver, current_chunk: Vec::new().into_iter() }
+        Self { receiver, join_handle: Some(join_handle), current_chunk: Vec::new().into_iter() }
     }
 }
 
@@ -129,6 +131,13 @@ where
             let res_r = if let Ok(result) = self.receiver.recv() {
                 result
             } else {
+                // join handle is not ``Copy`` or ``Clone`` and we need ownership of it to be able
+                // to join on it, hence the optional field and taking it off the iterator struct.
+                if let Some(join_handle) = self.join_handle.take() {
+                    if let Err(e) =  join_handle.join() {
+                        resume_unwind(e)
+                    }
+                }
                 return None;
             };
             // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
@@ -378,12 +387,57 @@ mod tests {
         let mut test_iter = FailingIter::new().into_iter().read_ahead(8, 1);
 
         for _ in 0..FAIL_POINT {
-            // Need to pass ownership back and forth to avoid the borrow checker complaining
             panic::catch_unwind(AssertUnwindSafe(|| {
                 test_iter.next();
             }))
             .expect("different error message");
         }
         test_iter.next();
+    }
+    /// Iterator struct that fails with a panic upon being dropped.
+    struct ExitFailingIter {
+        counter: usize,
+    }
+
+    impl ExitFailingIter {
+        fn new() -> Self {
+            Self { counter: 0 }
+        }
+    }
+
+    impl Iterator for ExitFailingIter {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.counter < FAIL_POINT {
+                let current = self.counter;
+                self.counter += 1;
+                Some(current)
+            } else {
+                None
+            }
+        }
+    }
+    impl Drop for ExitFailingIter {
+
+        fn drop(&mut self) {
+            panic!("expected error message")
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected error message")]
+    fn test_panic_occurring_after_iteration_raises() {
+        {
+            let mut test_iter = ExitFailingIter::new().into_iter().read_ahead(8, 1);
+
+            for _ in 0..FAIL_POINT {
+                panic::catch_unwind(AssertUnwindSafe(|| {
+                    test_iter.next();
+                }))
+                .expect("different error message");
+            }
+            assert_eq!(test_iter.next(), None);
+        }
     }
 }
