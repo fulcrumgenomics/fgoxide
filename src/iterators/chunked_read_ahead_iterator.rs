@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::vec::IntoIter;
 
 // type aliased to get clippy to not think this is too complex
@@ -13,7 +13,7 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// time consuming (e.g. reading from a compressed FASTQ file) and the main thread is bottlenecked
 /// by the speed of the underlying iterator.
 ///
-/// To use on a struct s that implements ``IntoIter``, it is as simple as:
+/// To use on a struct that implements ``IntoIter``, it is as simple as:
 /// ```
 /// use fgoxide::iterators::chunked_read_ahead_iterator::IntoChunkedReadAheadIterator;
 ///
@@ -30,10 +30,11 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// assert_eq!(chunked_iter.next(), Some(5));
 /// assert_eq!(chunked_iter.next(), Some(6));
 /// assert_eq!(chunked_iter.next(), Some(7));
+/// assert_eq!(chunked_iter.next(), None);
 /// ```
 /// Where ``chunk_size`` is the number of elements in the iter to include per send / recieve over
 /// the underlying channel, and ``buffer_size`` is the maximum number of chunks to keep on the
-/// channel at any given time (will block the thread until the space is freed up.).
+/// channel at any given time (will block the thread until the space is freed up).
 ///
 /// If your struct does not implement ``IntoIter``, you can either `impl`
 /// ``IntoChunkedReadAheadIterator`` manually or `impl` ``IntoIter`` manually and use the auto
@@ -42,8 +43,7 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// The chunked iterator can panic in the following circumstances:
 ///     - panics if the underlying iterator panics after the same number of ``next()`` calls.
 pub struct ChunkedReadAheadIterator<T: Send + 'static> {
-    /// The recieving object that recieves chunks of ``T``. TODO - make this a Vec<T> when adding
-    /// chunking.
+    /// The recieving object that recieves chunks of ``T``.
     receiver: Receiver<Result<Vec<T>, PanicUnwindErr>>,
     /// The most recent chunk recieved as an iterator. Used to produce owned ``T`` objects from
     /// the chunk
@@ -56,7 +56,7 @@ where
 {
     /// Creates a new ``Self`` from an existing iterator. Takes two parameters that
     /// control the number of items stored in the read-ahead buffer.  `chunk_size`
-    /// refers to how many items are transferred at a time from read-ahead thread and
+    /// refers to how many items are transferred at a time from the read-ahead thread and
     /// `chunk_count` controls how many chunks are read ahead.
     ///
     /// # Panics
@@ -201,7 +201,7 @@ mod tests {
     fn test_wrapping_empty_iter(#[case] chunk_size: usize) {
         let test_vec: Vec<usize> = Vec::new();
 
-        let mut chunked_iter = test_vec.into_iter().read_ahead(chunk_size, 1); // TODO add into chunked readahead
+        let mut chunked_iter = test_vec.into_iter().read_ahead(chunk_size, 1);
         assert_eq!(chunked_iter.next(), None);
     }
 
