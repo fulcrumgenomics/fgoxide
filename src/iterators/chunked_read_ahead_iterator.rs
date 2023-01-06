@@ -10,18 +10,18 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// Iterator extension that spawns an additional thread to read-ahead in the iterator. Sends
 /// results back to this object via a channel and returns them in the same manner as a normal
 /// iterator. This is useful in the context in which the reading of an iterator (or iterators) is
-/// time consuming (e.g. reading from a compressed FASTQ file) and the main thread is bottlenecked
+/// time consuming or computationally expensive and the consuming thread is bottlenecked
 /// by the speed of the underlying iterator.
 ///
-/// To use on a struct that implements ``IntoIter``, it is as simple as:
+/// To use on an Iterator that is ``Send`` + ``'static`` , it is as simple as:
 /// ```
 /// use fgoxide::iterators::chunked_read_ahead_iterator::IntoChunkedReadAheadIterator;
 ///
 /// let v = vec![0,1,2,3,4,5,6,7];
 /// let chunk_size = 5;
-/// let buffer_size = 5;
+/// let chunk_queue_size = 5;
 ///
-/// let mut chunked_iter = v.into_iter().read_ahead(chunk_size, buffer_size);
+/// let mut chunked_iter = v.into_iter().read_ahead(chunk_size, chunk_queue_size);
 /// assert_eq!(chunked_iter.next(), Some(0));
 /// assert_eq!(chunked_iter.next(), Some(1));
 /// assert_eq!(chunked_iter.next(), Some(2));
@@ -33,12 +33,8 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// assert_eq!(chunked_iter.next(), None);
 /// ```
 /// Where ``chunk_size`` is the number of elements in the iter to include per send / recieve over
-/// the underlying channel, and ``buffer_size`` is the maximum number of chunks to keep on the
+/// the underlying channel, and ``chunk_queue_size`` is the maximum number of chunks to keep on the
 /// channel at any given time (will block the thread until the space is freed up).
-///
-/// If your struct does not implement ``IntoIter``, you can either `impl`
-/// ``IntoChunkedReadAheadIterator`` manually or `impl` ``IntoIter`` manually and use the auto
-/// implementation from this module by importing ``IntoChunkedReadAheadIterator``.
 ///
 /// The chunked iterator can panic in the following circumstances:
 ///     - panics if the underlying iterator panics after the same number of ``next()`` calls.
@@ -121,15 +117,22 @@ where
             next_option
         } else {
             // Current chunk didn't have anything left in it, so
-            // Try to grab a new chunk, and panic if there are no chunks left (note that
-            // ``recv`` is blocking, so this will only return an error if the sender has been
-            // dropped and there are no more elements in the channel.)
-            // Clippy incorrectly marks this as something that can be done with a question mark
-            // so ignore that lint
+            // Try to grab a new chunk (note that ``recv`` is blocking, so this will only return an
+            // error if the sender has been dropped and there are no more elements in the channel.)
 
-            #[allow(clippy::question_mark)]
-            let res_r = if let Ok(result) = self.receiver.recv() {
-                result
+            if let Ok(chunk_or_panic) = self.receiver.recv() {
+                // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
+                // and return its next value ( shutting down our reciever if the next value is None).
+                // if the new chunk is an Err, raise it to the main thread.
+                match chunk_or_panic {
+                    Ok(next_chunk) => {
+                        self.current_chunk = next_chunk.into_iter();
+                        self.current_chunk.next()
+                    }
+                    Err(e) => {
+                        resume_unwind(e);
+                    }
+                }
             } else {
                 // join handle is not ``Copy`` or ``Clone`` and we need ownership of it to be able
                 // to join on it, hence the optional field and taking it off the iterator struct.
@@ -138,19 +141,7 @@ where
                         resume_unwind(e)
                     }
                 }
-                return None;
-            };
-            // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
-            // and return its next value ( shutting down our reciever if the next value is None).
-            // if the new chunk is an Err, raise it to the main thread.
-            match res_r {
-                Ok(next_chunk) => {
-                    self.current_chunk = next_chunk.into_iter();
-                    self.current_chunk.next()
-                }
-                Err(e) => {
-                    resume_unwind(e);
-                }
+                None
             }
         }
     }
