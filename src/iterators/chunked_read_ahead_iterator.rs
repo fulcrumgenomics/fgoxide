@@ -12,15 +12,15 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// iterator. This is useful in the context in which the reading of an iterator (or iterators) is
 /// time consuming (e.g. reading from a compressed FASTQ file) and the main thread is bottlenecked
 /// by the speed of the underlying iterator.
-/// 
+///
 /// To use on a struct s that implements ``IntoIter``, it is as simple as:
 /// ```
 /// use fgoxide::iterators::chunked_read_ahead_iterator::IntoChunkedReadAheadIterator;
-/// 
+///
 /// let v = vec![0,1,2,3,4,5,6,7];
 /// let chunk_size = 5;
 /// let buffer_size = 5;
-/// 
+///
 /// let mut chunked_iter = v.into_iter().read_ahead(chunk_size, buffer_size);
 /// assert_eq!(chunked_iter.next(), Some(0));
 /// assert_eq!(chunked_iter.next(), Some(1));
@@ -30,18 +30,18 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 /// assert_eq!(chunked_iter.next(), Some(5));
 /// assert_eq!(chunked_iter.next(), Some(6));
 /// assert_eq!(chunked_iter.next(), Some(7));
-/// ``` 
+/// ```
 /// Where ``chunk_size`` is the number of elements in the iter to include per send / recieve over
 /// the underlying channel, and ``buffer_size`` is the maximum number of chunks to keep on the
 /// channel at any given time (will block the thread until the space is freed up.).
-/// 
+///
 /// If your struct does not implement ``IntoIter``, you can either `impl`
 /// ``IntoChunkedReadAheadIterator`` manually or `impl` ``IntoIter`` manually and use the auto
 /// implementation from this module by importing ``IntoChunkedReadAheadIterator``.
-/// 
+///
 /// The chunked iterator can panic in the following circumstances:
 ///     - panics if the underlying iterator panics after the same number of ``next()`` calls.
- pub struct ChunkedReadAheadIterator<T: Send + 'static> {
+pub struct ChunkedReadAheadIterator<T: Send + 'static> {
     /// The recieving object that recieves chunks of ``T``. TODO - make this a Vec<T> when adding
     /// chunking.
     receiver: Receiver<Result<Vec<T>, PanicUnwindErr>>,
@@ -83,8 +83,7 @@ where
                             Ok(Some(val)) => chunk.push(val),
                             Ok(None) => break,
                             Err(e) => {
-                                let _x = sender
-                                    .send(Ok(chunk));
+                                let _x = sender.send(Ok(chunk));
                                 let _x = sender.send(Err(e));
                                 break 'chunk_loop;
                             }
@@ -128,10 +127,10 @@ where
 
             #[allow(clippy::question_mark)]
             let res_r = if let Ok(result) = self.receiver.recv() {
-                    result
-                } else {
-                    return None;
-                };
+                result
+            } else {
+                return None;
+            };
             // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
             // and return its next value ( shutting down our reciever if the next value is None).
             // if the new chunk is an Err, raise it to the main thread.
@@ -227,7 +226,10 @@ mod tests {
     #[case(4, 100)]
     #[case(8, 100)]
     #[case(16, 100)]
-    fn test_handle_large_iterator_and_low_chunk_size(#[case] chunk_size: usize, #[case] buffer_size: usize) {
+    fn test_handle_large_iterator_and_low_chunk_size(
+        #[case] chunk_size: usize,
+        #[case] buffer_size: usize,
+    ) {
         let test_vec: Vec<usize> = (0..1_000_000).into_iter().collect();
         let test_vec2 = test_vec.clone();
 
@@ -331,7 +333,8 @@ mod tests {
     #[case(8)]
     #[case(16)] // larger than the inner iterator
     fn test_read_past_end(#[case] chunk_size: usize) {
-        let mut test_iter = vec![0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter().read_ahead(chunk_size, 1);
+        let mut test_iter =
+            vec![0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter().read_ahead(chunk_size, 1);
         for i in 0..20 {
             let v = test_iter.next();
             if i < 10 {
