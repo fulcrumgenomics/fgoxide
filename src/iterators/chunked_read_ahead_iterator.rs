@@ -6,13 +6,45 @@ use std::vec::IntoIter;
 
 // type aliased to get clippy to not think this is too complex
 type PanicUnwindErr = Box<dyn Any + Send>;
+
 /// Iterator extension that spawns an additional thread to read-ahead in the iterator. Sends
 /// results back to this object via a channel and returns them in the same manner as a normal
-/// iterator
-pub struct ChunkedReadAheadIterator<T: Send + 'static> {
+/// iterator. This is useful in the context in which the reading of an iterator (or iterators) is
+/// time consuming (e.g. reading from a compressed FASTQ file) and the main thread is bottlenecked
+/// by the speed of the underlying iterator.
+/// 
+/// To use on a struct s that implements ``IntoIter``, it is as simple as:
+/// ```
+/// use fgoxide::iterators::chunked_read_ahead_iterator::IntoChunkedReadAheadIterator;
+/// 
+/// let v = vec![0,1,2,3,4,5,6,7];
+/// let chunk_size = 5;
+/// let buffer_size = 5;
+/// 
+/// let mut chunked_iter = v.into_iter().read_ahead(chunk_size, buffer_size);
+/// assert_eq!(chunked_iter.next(), Some(0));
+/// assert_eq!(chunked_iter.next(), Some(1));
+/// assert_eq!(chunked_iter.next(), Some(2));
+/// assert_eq!(chunked_iter.next(), Some(3));
+/// assert_eq!(chunked_iter.next(), Some(4));
+/// assert_eq!(chunked_iter.next(), Some(5));
+/// assert_eq!(chunked_iter.next(), Some(6));
+/// assert_eq!(chunked_iter.next(), Some(7));
+/// ``` 
+/// Where ``chunk_size`` is the number of elements in the iter to include per send / recieve over
+/// the underlying channel, and ``buffer_size`` is the maximum number of chunks to keep on the
+/// channel at any given time (will block the thread until the space is freed up.).
+/// 
+/// If your struct does not implement ``IntoIter``, you can either `impl`
+/// ``IntoChunkedReadAheadIterator`` manually or `impl` ``IntoIter`` manually and use the auto
+/// implementation from this module by importing ``IntoChunkedReadAheadIterator``.
+/// 
+/// The chunked iterator can panic in the following circumstances:
+///     - panics if the underlying iterator panics after the same number of ``next()`` calls.
+ pub struct ChunkedReadAheadIterator<T: Send + 'static> {
     /// The recieving object that recieves chunks of ``T``. TODO - make this a Vec<T> when adding
     /// chunking.
-    receiver: Option<Receiver<Result<Vec<T>, PanicUnwindErr>>>,
+    receiver: Receiver<Result<Vec<T>, PanicUnwindErr>>,
     /// The most recent chunk recieved as an iterator. Used to produce owned ``T`` objects from
     /// the chunk
     current_chunk: IntoIter<T>,
@@ -22,14 +54,12 @@ impl<T> ChunkedReadAheadIterator<T>
 where
     T: Send + 'static,
 {
-    /// Creates a new ``Self`` from an existing iterator, and parameters concerning the size of
-    /// underlying buffer elements.
+    /// Creates a new ``Self`` from an existing iterator. Takes two parameters that
+    /// control the number of items stored in the read-ahead buffer.  `chunk_size`
+    /// refers to how many items are transferred at a time from read-ahead thread and
+    /// `chunk_count` controls how many chunks are read ahead.
     ///
     /// # Panics
-    ///
-    /// - panics if the underlying iterator panics
-    /// - panics if sending final chunk after an internal panic fails
-    /// - panics if sending the None kill signal to the recieiver after an internal panic fails
     /// - panics if the spawned thread fails to spawn
     pub fn new<I>(mut inner: I, chunk_size: usize, num_chunk_buffer_size: usize) -> Self
     where
@@ -53,20 +83,17 @@ where
                             Ok(Some(val)) => chunk.push(val),
                             Ok(None) => break,
                             Err(e) => {
-                                sender
-                                    .send(Ok(chunk))
-                                    .expect("Error sending final chunk before internal panic");
-                                sender.send(Err(e)).expect("Error sending internal panic result");
+                                let _x = sender
+                                    .send(Ok(chunk));
+                                let _x = sender.send(Err(e));
                                 break 'chunk_loop;
                             }
                         }
                     }
-                    if chunk.is_empty() {
-                        break;
-                    }
-                    let send_result = sender.send(Ok(chunk));
-                    if send_result.is_err() {
-                        // TODO - Logging?
+                    // If there is nothing in the chunk because the innner iterator is
+                    // exhausted, or we get a send error (implying the receiver has been
+                    // dropped), then exit the thread's main loop.
+                    if chunk.is_empty() || sender.send(Ok(chunk)).is_err() {
                         break;
                     }
                 }
@@ -74,17 +101,7 @@ where
             .expect("failed to spawn chunked read ahead thread");
 
         // Store the necessary objects on ``Self``
-        Self { current_chunk: Vec::new().into_iter(), receiver: Some(receiver) }
-    }
-}
-
-impl<T> Drop for ChunkedReadAheadIterator<T>
-where
-    T: Send + 'static,
-{
-    fn drop(&mut self) {
-        // Make sure our reciever is dropped so our spawned thread shuts down.
-        self.receiver = None;
+        Self { receiver, current_chunk: Vec::new().into_iter() }
     }
 }
 
@@ -98,42 +115,32 @@ where
         // Check if our current chunk has anything left in it
         // If so, just return that result
         // If not, see documentation on else block
-        if let Some(result) = self.current_chunk.next() {
-            Some(result)
+        let next_option = self.current_chunk.next();
+        if next_option.is_some() {
+            next_option
         } else {
             // Current chunk didn't have anything left in it, so
             // Try to grab a new chunk, and panic if there are no chunks left (note that
             // ``recv`` is blocking, so this will only return an error if the sender has been
             // dropped and there are no more elements in the channel.)
-            let res_r = if let Some(r) = self.receiver.as_ref() {
-                // Clippy incorrectly marks this as something that can be done with a question mark
-                // so ignore that lint
-                #[allow(clippy::question_mark)]
-                if let Ok(result) = r.recv() {
+            // Clippy incorrectly marks this as something that can be done with a question mark
+            // so ignore that lint
+
+            #[allow(clippy::question_mark)]
+            let res_r = if let Ok(result) = self.receiver.recv() {
                     result
                 } else {
                     return None;
-                }
-            } else {
-                let box_message: Box<dyn Any + Send> =
-                    Box::new("Reciever is None yet iteration is ongoing.");
-                Err(box_message)
-            };
+                };
             // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
             // and return its next value ( shutting down our reciever if the next value is None).
             // if the new chunk is an Err, raise it to the main thread.
             match res_r {
                 Ok(next_chunk) => {
                     self.current_chunk = next_chunk.into_iter();
-                    if let Some(result) = self.current_chunk.next() {
-                        Some(result)
-                    } else {
-                        self.receiver = None;
-                        None
-                    }
+                    self.current_chunk.next()
                 }
                 Err(e) => {
-                    self.receiver = None;
                     resume_unwind(e);
                 }
             }
@@ -200,17 +207,32 @@ mod tests {
     }
 
     #[rstest]
-    #[case(1)] // smallest possible
-    #[case(2)]
-    #[case(4)]
-    #[case(8)]
-    #[case(16)] // larger than the inner iterator
-    fn test_handle_large_iterator_and_low_chunk_size(#[case] chunk_size: usize) {
+    #[case(1, 1)] // smallest possible
+    #[case(2, 1)]
+    #[case(4, 1)]
+    #[case(8, 1)]
+    #[case(16, 1)]
+    #[case(1, 2)]
+    #[case(2, 2)]
+    #[case(4, 2)]
+    #[case(8, 2)]
+    #[case(16, 2)]
+    #[case(1, 16)]
+    #[case(2, 16)]
+    #[case(4, 16)]
+    #[case(8, 16)]
+    #[case(16, 16)]
+    #[case(1, 100)]
+    #[case(2, 100)]
+    #[case(4, 100)]
+    #[case(8, 100)]
+    #[case(16, 100)]
+    fn test_handle_large_iterator_and_low_chunk_size(#[case] chunk_size: usize, #[case] buffer_size: usize) {
         let test_vec: Vec<usize> = (0..1_000_000).into_iter().collect();
         let test_vec2 = test_vec.clone();
 
         let mut regular_iter = test_vec.into_iter();
-        let mut chunked_iter = test_vec2.into_iter().read_ahead(chunk_size, 1);
+        let mut chunked_iter = test_vec2.into_iter().read_ahead(chunk_size, buffer_size);
 
         loop {
             let i = regular_iter.next();
@@ -225,19 +247,10 @@ mod tests {
 
     #[test]
     fn test_low_bound_on_channel_for_blocking() {
-        let mut chunked_iter = (0..100_000).into_iter().read_ahead(8, 1);
-        for _ in 0..4 {
-            chunked_iter.next();
-        }
-        drop(chunked_iter);
-        let mut test_iter = vec![0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter();
-        for i in 0..20 {
-            let v = test_iter.next();
-            if i < 10 {
-                assert_eq!(v, Some(i));
-            } else {
-                assert_eq!(v, None);
-            }
+        let chunked_iter = (0..100_000).into_iter().read_ahead(8, 1);
+        for i in chunked_iter {
+            // Do some work so iter will get consumed
+            let _ = i % 2;
         }
     }
 
@@ -311,9 +324,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_read_past_end() {
-        let mut test_iter = vec![0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter();
+    #[rstest]
+    #[case(1)] // smallest possible
+    #[case(2)]
+    #[case(4)]
+    #[case(8)]
+    #[case(16)] // larger than the inner iterator
+    fn test_read_past_end(#[case] chunk_size: usize) {
+        let mut test_iter = vec![0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9].into_iter().read_ahead(chunk_size, 1);
         for i in 0..20 {
             let v = test_iter.next();
             if i < 10 {
