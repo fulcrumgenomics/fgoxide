@@ -15,7 +15,7 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 ///
 /// To use on an Iterator that is ``Send`` + ``'static`` , it is as simple as:
 /// ```
-/// use fgoxide::iterators::chunked_read_ahead_iterator::IntoChunkedReadAheadIterator;
+/// use fgoxide::iter::IntoChunkedReadAheadIterator;
 ///
 /// let v = vec![0,1,2,3,4,5,6,7];
 /// let chunk_size = 5;

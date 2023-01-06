@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod io;
-pub mod iterators;
+pub mod iter;
 
 use thiserror::Error;
 
