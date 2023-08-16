@@ -4,7 +4,7 @@
 //! I/O activities, such a slurping a file by lines, or writing a collection of `Serializable`
 //! objects to a path.
 //!
-//! The two core parts of this module are teh [`Io`] and [`DelimFile`] structs. These structs provide
+//! The two core parts of this module are the [`Io`] and [`DelimFile`] structs. These structs provide
 //! methods for reading and writing to files that transparently handle compression based on the
 //! file extension of the path given to the methods.
 //!
@@ -51,9 +51,13 @@ use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{de::DeserializeOwned, Serialize};
+use zstd::stream::{Decoder, Encoder};
 
 /// The set of file extensions to treat as GZIPPED
 const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
+
+/// The set of file extensions to treat as ZSTD compressed
+const ZSTD_EXTENSIONS: [&str; 1] = ["zst"];
 
 /// The default buffer size when creating buffered readers/writers
 const BUFFER_SIZE: usize = 64 * 1024;
@@ -90,8 +94,19 @@ impl Io {
         }
     }
 
-    /// Opens a file for reading.  Transparently handles reading gzipped files based
-    /// extension.
+    /// Returns true if the path ends with a recognized ZSTD file extension
+    fn is_zstd_path<P: AsRef<Path>>(p: &P) -> bool {
+        if let Some(ext) = p.as_ref().extension() {
+            match ext.to_str() {
+                Some(x) => ZSTD_EXTENSIONS.contains(&x),
+                None => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Opens a file for reading. Transparently handles decoding gzip and zstd files.
     pub fn new_reader<P>(&self, p: &P) -> Result<Box<dyn BufRead + Send>>
     where
         P: AsRef<Path>,
@@ -101,13 +116,14 @@ impl Io {
 
         if Self::is_gzip_path(p) {
             Ok(Box::new(BufReader::with_capacity(self.buffer_size, MultiGzDecoder::new(buf))))
+        } else if Self::is_zstd_path(p) {
+            Ok(Box::new(BufReader::with_capacity(self.buffer_size, Decoder::new(buf).unwrap())))
         } else {
             Ok(Box::new(buf))
         }
     }
 
-    /// Opens a file for writing. Transparently handles writing GZIP'd data if the file
-    /// ends with a recognized GZIP extension.
+    /// Opens a file for writing. Transparently handles encoding data in gzip and zstd formats.
     pub fn new_writer<P>(&self, p: &P) -> Result<BufWriter<Box<dyn Write + Send>>>
     where
         P: AsRef<Path>,
@@ -115,6 +131,8 @@ impl Io {
         let file = File::create(p).map_err(FgError::IoError)?;
         let write: Box<dyn Write + Send> = if Io::is_gzip_path(p) {
             Box::new(GzEncoder::new(file, self.compression))
+        } else if Io::is_zstd_path(p) {
+            Box::new(Encoder::new(file, 0).unwrap().auto_finish())
         } else {
             Box::new(file)
         };
@@ -311,6 +329,27 @@ mod tests {
 
         // Also check that we actually wrote gzipped data to the gzip file!
         assert_ne!(text.metadata().unwrap().len(), gzipped.metadata().unwrap().len());
+    }
+
+    #[test]
+    fn test_reading_and_writing_zstd_files() {
+        let lines = vec!["foo", "bar", "baz"];
+        let tempdir = TempDir::new().unwrap();
+        let text = tempdir.path().join("text.txt");
+        let zstd_compressed = tempdir.path().join("zstd_compressed.txt.zst");
+
+        let io = Io::default();
+        io.write_lines(&text, &mut lines.iter()).unwrap();
+        io.write_lines(&zstd_compressed, &mut lines.iter()).unwrap();
+
+        let r1 = io.read_lines(&text).unwrap();
+        let r2 = io.read_lines(&zstd_compressed).unwrap();
+
+        assert_eq!(r1, lines);
+        assert_eq!(r2, lines);
+
+        // Also check that we actually wrote zstd encoded data to the zstd file!
+        assert_ne!(text.metadata().unwrap().len(), zstd_compressed.metadata().unwrap().len());
     }
 
     #[test]
