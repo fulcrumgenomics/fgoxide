@@ -53,14 +53,13 @@ use flate2::Compression;
 use serde::{de::DeserializeOwned, Serialize};
 use zstd::stream::{Decoder as ZstdDecoder, Encoder as ZstdEncoder};
 
-/// The set of file extensions to treat as GZIPPED
-const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
-
-/// The set of file extensions to treat as ZSTD compressed
-const ZSTD_EXTENSIONS: [&str; 1] = ["zst"];
-
 /// The default buffer size when creating buffered readers/writers
 const BUFFER_SIZE: usize = 64 * 1024;
+
+/// The set of file extensions to treat as FASTQ, GZIPPED, or ZSTD
+const FASTQ_EXTENSIONS: [&str; 2] = ["fastq", "fq"];
+const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
+const ZSTD_EXTENSIONS: [&str; 1] = ["zst"];
 
 /// Unit-struct that contains associated functions for reading and writing Structs to/from
 /// unstructured files.
@@ -80,30 +79,6 @@ impl Io {
     /// Creates a new Io instance with the given compression level.
     pub fn new(compression: u32, buffer_size: usize) -> Io {
         Io { compression: flate2::Compression::new(compression), buffer_size }
-    }
-
-    /// Returns true if the path ends with a recognized GZIP file extension
-    fn is_gzip_path<P: AsRef<Path>>(p: &P) -> bool {
-        if let Some(ext) = p.as_ref().extension() {
-            match ext.to_str() {
-                Some(x) => GZIP_EXTENSIONS.contains(&x),
-                None => false,
-            }
-        } else {
-            false
-        }
-    }
-
-    /// Returns true if the path ends with a recognized ZSTD file extension
-    fn is_zstd_path<P: AsRef<Path>>(p: &P) -> bool {
-        if let Some(ext) = p.as_ref().extension() {
-            match ext.to_str() {
-                Some(x) => ZSTD_EXTENSIONS.contains(&x),
-                None => false,
-            }
-        } else {
-            false
-        }
     }
 
     /// Opens a file for reading. Transparently handles decoding gzip and zstd files.
@@ -170,6 +145,36 @@ impl Io {
         }
 
         out.flush().map_err(FgError::IoError)
+    }
+
+    /// Returns true if the path ends with a recognized file extension
+    fn is_path_with_extension<P: AsRef<Path>, const N: usize>(
+        p: &P,
+        extensions: [&str; N],
+    ) -> bool {
+        if let Some(ext) = p.as_ref().extension() {
+            match ext.to_str() {
+                Some(x) => extensions.contains(&x),
+                None => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Returns true if the path ends with a recognized FASTQ file extension
+    pub fn is_fastq_path<P: AsRef<Path>>(p: &P) -> bool {
+        Self::is_path_with_extension(p, FASTQ_EXTENSIONS)
+    }
+
+    /// Returns true if the path ends with a recognized GZIP file extension
+    pub fn is_gzip_path<P: AsRef<Path>>(p: &P) -> bool {
+        Self::is_path_with_extension(p, GZIP_EXTENSIONS)
+    }
+
+    /// Returns true if the path ends with a recognized ZSTD file extension
+    pub fn is_zstd_path<P: AsRef<Path>>(p: &P) -> bool {
+        Self::is_path_with_extension(p, ZSTD_EXTENSIONS)
     }
 }
 
