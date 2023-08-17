@@ -287,6 +287,7 @@ impl DelimFile {
 #[cfg(test)]
 mod tests {
     use crate::io::{DelimFile, Io};
+    use rstest::rstest;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
@@ -398,5 +399,52 @@ mod tests {
 
         assert_eq!(from_csv, recs);
         assert_eq!(from_tsv, recs);
+    }
+
+    // ############################################################################################
+    // Tests is_gzip_path()
+    // ############################################################################################
+
+    #[rstest]
+    #[case("test_fastq.fq.gz", true)] // .fq.gz is valid gzip
+    #[case("test_fastq.fq.bgz", true)] // .fq.bgz is valid gzip
+    #[case("test_fastq.fq.tar", false)] // .fq.tar is invalid gzip
+    fn test_is_gzip_path(#[case] file_name: &str, #[case] expected: bool) {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join(file_name);
+        let result = Io::is_gzip_path(&file_path);
+        assert_eq!(result, expected);
+    }
+
+    // ############################################################################################
+    // Tests is_zstd_path()
+    // ############################################################################################
+
+    #[rstest]
+    #[case("test_fastq.fq", false)] // .fq is invalid zstd
+    #[case("test_fastq.fq.gz", false)] // .fq.gz is invalid zstd
+    #[case("test_fastq.fq.bgz", false)] // .fq.bgz is invalid zstd
+    #[case("test_fastq.fq.tar", false)] // .fq.tar is invalid zstd
+    #[case("test_fastq.fq.zst", true)] // .fq.zst is valid zstd
+    fn test_is_zstd_path(#[case] file_name: &str, #[case] expected: bool) {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join(file_name);
+        let result = Io::is_zstd_path(&file_path);
+        assert_eq!(result, expected);
+    }
+
+    // ############################################################################################
+    // Tests is_fastq_path()
+    // ############################################################################################
+
+    #[rstest]
+    #[case("test_fastq.fq", true)] // .fq is valid fastq
+    #[case("test_fastq.fastq", true)] // .fastq is valid fastq
+    #[case("test_fastq.sam", false)] // .sam is invalid fastq
+    fn test_is_fastq_path(#[case] file_name: &str, #[case] expected: bool) {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join(file_name);
+        let result = Io::is_fastq_path(&file_path);
+        assert_eq!(result, expected);
     }
 }
