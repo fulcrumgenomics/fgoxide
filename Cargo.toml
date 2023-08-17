@@ -17,8 +17,11 @@ keywords = ["utilities"]
 [dependencies]
 thiserror = "^1"
 
-# For auto-gzip handing of files
+# For auto-gzip handling of files
 flate2 = "^1"
+
+# For auto-zstd handling of files
+zstd = "0.12.4"
 
 # For auto-serialization of structs to csv/tsv
 csv = "^1"
