@@ -117,7 +117,10 @@ impl Io {
         if Self::is_gzip_path(p) {
             Ok(Box::new(BufReader::with_capacity(self.buffer_size, MultiGzDecoder::new(buf))))
         } else if Self::is_zstd_path(p) {
-            Ok(Box::new(BufReader::with_capacity(self.buffer_size, ZstdDecoder::new(buf).unwrap())))
+            Ok(Box::new(BufReader::with_capacity(
+                self.buffer_size,
+                ZstdDecoder::new(buf).map_err(FgError::IoError)?,
+            )))
         } else {
             Ok(Box::new(buf))
         }
@@ -132,7 +135,7 @@ impl Io {
         let write: Box<dyn Write + Send> = if Io::is_gzip_path(p) {
             Box::new(GzEncoder::new(file, self.compression))
         } else if Io::is_zstd_path(p) {
-            Box::new(ZstdEncoder::new(file, 0).unwrap().auto_finish())
+            Box::new(ZstdEncoder::new(file, 0).map_err(FgError::IoError)?.auto_finish())
         } else {
             Box::new(file)
         };
