@@ -51,7 +51,7 @@ use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{de::DeserializeOwned, Serialize};
-use zstd::stream::{Decoder, Encoder};
+use zstd::stream::{Decoder as ZstdDecoder, Encoder as ZstdEncoder};
 
 /// The set of file extensions to treat as GZIPPED
 const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
@@ -117,7 +117,7 @@ impl Io {
         if Self::is_gzip_path(p) {
             Ok(Box::new(BufReader::with_capacity(self.buffer_size, MultiGzDecoder::new(buf))))
         } else if Self::is_zstd_path(p) {
-            Ok(Box::new(BufReader::with_capacity(self.buffer_size, Decoder::new(buf).unwrap())))
+            Ok(Box::new(BufReader::with_capacity(self.buffer_size, ZstdDecoder::new(buf).unwrap())))
         } else {
             Ok(Box::new(buf))
         }
@@ -132,7 +132,7 @@ impl Io {
         let write: Box<dyn Write + Send> = if Io::is_gzip_path(p) {
             Box::new(GzEncoder::new(file, self.compression))
         } else if Io::is_zstd_path(p) {
-            Box::new(Encoder::new(file, 0).unwrap().auto_finish())
+            Box::new(ZstdEncoder::new(file, 0).unwrap().auto_finish())
         } else {
             Box::new(file)
         };
@@ -338,6 +338,9 @@ mod tests {
         let text = tempdir.path().join("text.txt");
         let zstd_compressed = tempdir.path().join("zstd_compressed.txt.zst");
 
+        assert_eq!(Io::is_zstd_path(&text), false);
+        assert_eq!(Io::is_zstd_path(&zstd_compressed), true);
+
         let io = Io::default();
         io.write_lines(&text, &mut lines.iter()).unwrap();
         io.write_lines(&zstd_compressed, &mut lines.iter()).unwrap();
@@ -348,7 +351,7 @@ mod tests {
         assert_eq!(r1, lines);
         assert_eq!(r2, lines);
 
-        // Also check that we actually wrote zstd encoded data to the zstd file!
+        // Check whether the two files are different
         assert_ne!(text.metadata().unwrap().len(), zstd_compressed.metadata().unwrap().len());
     }
 
