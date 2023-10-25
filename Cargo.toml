@@ -3,8 +3,8 @@ name = "fgoxide"
 version = "0.3.0"
 edition = "2021"
 authors = [
-    "Tim Fennell <tim@fulcrumgenomics.com",
-    "Seth Stadick <seth@fulcrumgenomics.com>"
+    "Tim Fennell <tim@fulcrumgenomics.com>",
+    "Nils Homer <nils@fulcrumgenomics.com>"
 ]
 license = "MIT"
 repository = "https://github.com/fulcrumgenomics/fgoxide"
