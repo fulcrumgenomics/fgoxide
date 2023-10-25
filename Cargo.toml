@@ -21,7 +21,7 @@ thiserror = "^1"
 flate2 = "^1"
 
 # For auto-serialization of structs to csv/tsv
-csv = "^1.2, <1.3"
+csv = "^1, <1.2"
 serde = { version = "^1.0.123", features = ["derive"] }
 
 [dev-dependencies]
