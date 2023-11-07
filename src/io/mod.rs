@@ -79,7 +79,7 @@ impl Io {
     }
 
     /// Returns true if the path ends with a recognized GZIP file extension
-    fn is_gzip_path<P: AsRef<Path>>(p: &P) -> bool {
+    fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
         if let Some(ext) = p.as_ref().extension() {
             match ext.to_str() {
                 Some(x) => GZIP_EXTENSIONS.contains(&x),
@@ -92,7 +92,7 @@ impl Io {
 
     /// Opens a file for reading.  Transparently handles reading gzipped files based
     /// extension.
-    pub fn new_reader<P>(&self, p: &P) -> Result<Box<dyn BufRead + Send>>
+    pub fn new_reader<P>(&self, p: P) -> Result<Box<dyn BufRead + Send>>
     where
         P: AsRef<Path>,
     {
@@ -108,7 +108,7 @@ impl Io {
 
     /// Opens a file for writing. Transparently handles writing GZIP'd data if the file
     /// ends with a recognized GZIP extension.
-    pub fn new_writer<P>(&self, p: &P) -> Result<BufWriter<Box<dyn Write + Send>>>
+    pub fn new_writer<P>(&self, p: P) -> Result<BufWriter<Box<dyn Write + Send>>>
     where
         P: AsRef<Path>,
     {
@@ -167,6 +167,30 @@ impl Default for DelimFile {
 }
 
 impl DelimFile {
+    /// Returns a new `DelimFileReader` instance that reads from the given path, opened with this
+    /// `DelimFile`'s `Io` instance.
+    pub fn new_reader<D: Deserialize, P: AsRef<Path>>(
+        &self,
+        path: P,
+        delimiter: u8,
+        quote: bool,
+    ) -> Result<DelimFileReader<D>> {
+        let file = self.io.new_reader(path)?;
+        Ok(DelimFileReader::new(file, delimiter, quote))
+    }
+
+    /// Returns a new `DelimFileWriter` instance that writes to the given path, opened with this
+    /// `DelimFile`'s `Io` instance.
+    pub fn new_writer<S: Serialize, P: AsRef<Path>>(
+        &self,
+        path: P,
+        delimiter: u8,
+        quote: bool,
+    ) -> Result<DelimFileWriter<S>> {
+        let file = self.io.new_writer(path)?;
+        Ok(DelimFileWriter::new(file, delimiter, quote))
+    }
+
     /// Writes a series of one or more structs to a delimited file.  If `quote` is true then fields
     /// will be quoted as necessary, otherwise they will never be quoted.
     pub fn write<S, P>(
