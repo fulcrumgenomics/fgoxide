@@ -47,7 +47,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 
 use crate::{FgError, Result};
-use csv::{DeserializeRecordsIntoIter, QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
+use csv::{DeserializeRecordsIntoIter, QuoteStyle, ReaderBuilder, Writer, WriterBuilder, StringRecord};
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -157,19 +157,27 @@ impl Io {
 /// It also implements `Iterator`.
 pub struct DelimFileReader<D: DeserializeOwned> {
     record_iter: DeserializeRecordsIntoIter<Box<dyn BufRead + Send>, D>,
+    header: StringRecord,
 }
 
 impl<D: DeserializeOwned> DelimFileReader<D> {
     /// Returns a new `DelimFileReader` that will read records from the given reader with the given
     /// delimiter and quoting. Assumes the input file has a header row.
-    pub fn new(reader: Box<dyn BufRead + Send>, delimiter: u8, quote: bool) -> Self {
-        let csv_reader = ReaderBuilder::new()
+    pub fn new(reader: Box<dyn BufRead + Send>, delimiter: u8, quote: bool) -> Result<Self> {
+        let mut csv_reader = ReaderBuilder::new()
             .delimiter(delimiter)
             .has_headers(true)
             .quoting(quote)
             .from_reader(reader);
+        assert!(csv_reader.has_headers(), "Expected input file to have a header row");
+        let header = csv_reader.headers().map_err(FgError::ConversionError)?.to_owned();
         let record_iter = csv_reader.into_deserialize();
-        Self { record_iter }
+        Ok(Self { record_iter, header })
+    }
+
+    /// Returns the contents of the header row.
+    pub fn header(&self) -> &StringRecord {
+        &self.header
     }
 
     /// Returns the next record from the underlying reader.
@@ -251,7 +259,7 @@ impl DelimFile {
         quote: bool,
     ) -> Result<DelimFileReader<D>> {
         let file = self.io.new_reader(path)?;
-        Ok(DelimFileReader::new(file, delimiter, quote))
+        DelimFileReader::new(file, delimiter, quote)
     }
 
     /// Returns a new `DelimFileWriter` instance that writes to the given path, opened with this
