@@ -153,11 +153,15 @@ impl Io {
     }
 }
 
+/// A struct that wraps a csv `Reader` and provides methods for reading one record at a time.
+/// It also implements `Iterator`.
 pub struct DelimFileReader<D: DeserializeOwned> {
     record_iter: DeserializeRecordsIntoIter<Box<dyn BufRead + Send>, D>,
 }
 
 impl<D: DeserializeOwned> DelimFileReader<D> {
+    /// Returns a new `DelimFileReader` that will read records from the given reader with the given
+    /// delimiter and quoting. Assumes the input file has a header row.
     pub fn new(reader: Box<dyn BufRead + Send>, delimiter: u8, quote: bool) -> Self {
         let csv_reader = ReaderBuilder::new()
             .delimiter(delimiter)
@@ -168,6 +172,7 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
         Self { record_iter }
     }
 
+    /// Returns the next record from the underlying reader.
     pub fn read(&mut self) -> Option<Result<D>> {
         self.record_iter.next().map(|result| result.map_err(FgError::ConversionError))
     }
@@ -181,12 +186,16 @@ impl<D: DeserializeOwned> Iterator for DelimFileReader<D> {
     }
 }
 
+/// A struct that wraps a csv `Writer` and provides methods for writing single records as well as
+/// multiple records from an iterator.
 pub struct DelimFileWriter<S: Serialize> {
     csv_writer: Writer<BufWriter<Box<dyn Write + Send>>>,
     _data: PhantomData<S>,
 }
 
 impl<S: Serialize> DelimFileWriter<S> {
+    /// Returns a new `DelimFileWriter` that writes to the given `writer` with the given delimiter
+    /// and quoting. The output file will have a header row.
     pub fn new(writer: BufWriter<Box<dyn Write + Send>>, delimiter: u8, quote: bool) -> Self {
         let csv_writer = WriterBuilder::new()
             .delimiter(delimiter)
@@ -196,10 +205,12 @@ impl<S: Serialize> DelimFileWriter<S> {
         Self { csv_writer, _data: PhantomData }
     }
 
+    /// Writes a single record to the underlying writer.
     pub fn write(&mut self, rec: &S) -> Result<()> {
         self.csv_writer.serialize(rec).map_err(FgError::ConversionError)
     }
 
+    /// Writes all records from `iter` to the underlying writer, in order.
     pub fn write_all(&mut self, iter: impl IntoIterator<Item = S>) -> Result<()> {
         for rec in iter {
             self.write(&rec)?;
@@ -208,6 +219,9 @@ impl<S: Serialize> DelimFileWriter<S> {
         Ok(())
     }
 
+    /// Flushes the underlying writer.
+    /// Note: this is not strictly necessary as the underlying writer is flushed automatically
+    /// on `Drop`.
     pub fn flush(&mut self) -> Result<()> {
         self.csv_writer.flush().map_err(FgError::IoError)
     }
