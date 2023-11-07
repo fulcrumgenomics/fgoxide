@@ -47,7 +47,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 
 use crate::{FgError, Result};
-use csv::{QuoteStyle, ReaderBuilder, DeserializeRecordsIntoIter, WriterBuilder, Writer};
+use csv::{DeserializeRecordsIntoIter, QuoteStyle, ReaderBuilder, Writer, WriterBuilder};
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
