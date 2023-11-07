@@ -43,10 +43,13 @@
 //! ```
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::marker::PhantomData;
 use std::path::Path;
 
 use crate::{FgError, Result};
-use csv::{QuoteStyle, ReaderBuilder, WriterBuilder};
+use csv::{
+    DeserializeRecordsIntoIter, QuoteStyle, ReaderBuilder, StringRecord, Writer, WriterBuilder,
+};
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -79,7 +82,7 @@ impl Io {
     }
 
     /// Returns true if the path ends with a recognized GZIP file extension
-    fn is_gzip_path<P: AsRef<Path>>(p: &P) -> bool {
+    fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
         if let Some(ext) = p.as_ref().extension() {
             match ext.to_str() {
                 Some(x) => GZIP_EXTENSIONS.contains(&x),
@@ -92,11 +95,11 @@ impl Io {
 
     /// Opens a file for reading.  Transparently handles reading gzipped files based
     /// extension.
-    pub fn new_reader<P>(&self, p: &P) -> Result<Box<dyn BufRead + Send>>
+    pub fn new_reader<P>(&self, p: P) -> Result<Box<dyn BufRead + Send>>
     where
         P: AsRef<Path>,
     {
-        let file = File::open(p).map_err(FgError::IoError)?;
+        let file = File::open(p.as_ref()).map_err(FgError::IoError)?;
         let buf = BufReader::with_capacity(self.buffer_size, file);
 
         if Self::is_gzip_path(p) {
@@ -108,11 +111,11 @@ impl Io {
 
     /// Opens a file for writing. Transparently handles writing GZIP'd data if the file
     /// ends with a recognized GZIP extension.
-    pub fn new_writer<P>(&self, p: &P) -> Result<BufWriter<Box<dyn Write + Send>>>
+    pub fn new_writer<P>(&self, p: P) -> Result<BufWriter<Box<dyn Write + Send>>>
     where
         P: AsRef<Path>,
     {
-        let file = File::create(p).map_err(FgError::IoError)?;
+        let file = File::create(p.as_ref()).map_err(FgError::IoError)?;
         let write: Box<dyn Write + Send> = if Io::is_gzip_path(p) {
             Box::new(GzEncoder::new(file, self.compression))
         } else {
@@ -152,6 +155,88 @@ impl Io {
     }
 }
 
+/// A struct that wraps a csv `Reader` and provides methods for reading one record at a time.
+/// It also implements `Iterator`.
+pub struct DelimFileReader<D: DeserializeOwned> {
+    record_iter: DeserializeRecordsIntoIter<Box<dyn BufRead + Send>, D>,
+    header: StringRecord,
+}
+
+impl<D: DeserializeOwned> DelimFileReader<D> {
+    /// Returns a new `DelimFileReader` that will read records from the given reader with the given
+    /// delimiter and quoting. Assumes the input file has a header row.
+    pub fn new(reader: Box<dyn BufRead + Send>, delimiter: u8, quote: bool) -> Result<Self> {
+        let mut csv_reader = ReaderBuilder::new()
+            .delimiter(delimiter)
+            .has_headers(true)
+            .quoting(quote)
+            .from_reader(reader);
+        assert!(csv_reader.has_headers(), "Expected input file to have a header row");
+        let header = csv_reader.headers().map_err(FgError::ConversionError)?.to_owned();
+        let record_iter = csv_reader.into_deserialize();
+        Ok(Self { record_iter, header })
+    }
+
+    /// Returns the contents of the header row.
+    pub fn header(&self) -> &StringRecord {
+        &self.header
+    }
+
+    /// Returns the next record from the underlying reader.
+    pub fn read(&mut self) -> Option<Result<D>> {
+        self.record_iter.next().map(|result| result.map_err(FgError::ConversionError))
+    }
+}
+
+impl<D: DeserializeOwned> Iterator for DelimFileReader<D> {
+    type Item = Result<D>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.read()
+    }
+}
+
+/// A struct that wraps a csv `Writer` and provides methods for writing single records as well as
+/// multiple records from an iterator.
+pub struct DelimFileWriter<S: Serialize> {
+    csv_writer: Writer<BufWriter<Box<dyn Write + Send>>>,
+    _data: PhantomData<S>,
+}
+
+impl<S: Serialize> DelimFileWriter<S> {
+    /// Returns a new `DelimFileWriter` that writes to the given `writer` with the given delimiter
+    /// and quoting. The output file will have a header row.
+    pub fn new(writer: BufWriter<Box<dyn Write + Send>>, delimiter: u8, quote: bool) -> Self {
+        let csv_writer = WriterBuilder::new()
+            .delimiter(delimiter)
+            .has_headers(true)
+            .quote_style(if quote { QuoteStyle::Necessary } else { QuoteStyle::Never })
+            .from_writer(writer);
+        Self { csv_writer, _data: PhantomData }
+    }
+
+    /// Writes a single record to the underlying writer.
+    pub fn write(&mut self, rec: &S) -> Result<()> {
+        self.csv_writer.serialize(rec).map_err(FgError::ConversionError)
+    }
+
+    /// Writes all records from `iter` to the underlying writer, in order.
+    pub fn write_all(&mut self, iter: impl IntoIterator<Item = S>) -> Result<()> {
+        for rec in iter {
+            self.write(&rec)?;
+        }
+        self.flush()?;
+        Ok(())
+    }
+
+    /// Flushes the underlying writer.
+    /// Note: this is not strictly necessary as the underlying writer is flushed automatically
+    /// on `Drop`.
+    pub fn flush(&mut self) -> Result<()> {
+        self.csv_writer.flush().map_err(FgError::IoError)
+    }
+}
+
 /// Unit-struct that contains associated functions for reading and writing Structs to/from
 /// delimited files.  Structs should use serde's Serialize/Deserialize derive macros in
 /// order to be used with these functions.
@@ -167,6 +252,30 @@ impl Default for DelimFile {
 }
 
 impl DelimFile {
+    /// Returns a new `DelimFileReader` instance that reads from the given path, opened with this
+    /// `DelimFile`'s `Io` instance.
+    pub fn new_reader<D: DeserializeOwned, P: AsRef<Path>>(
+        &self,
+        path: P,
+        delimiter: u8,
+        quote: bool,
+    ) -> Result<DelimFileReader<D>> {
+        let file = self.io.new_reader(path)?;
+        DelimFileReader::new(file, delimiter, quote)
+    }
+
+    /// Returns a new `DelimFileWriter` instance that writes to the given path, opened with this
+    /// `DelimFile`'s `Io` instance.
+    pub fn new_writer<S: Serialize, P: AsRef<Path>>(
+        &self,
+        path: P,
+        delimiter: u8,
+        quote: bool,
+    ) -> Result<DelimFileWriter<S>> {
+        let file = self.io.new_writer(path)?;
+        Ok(DelimFileWriter::new(file, delimiter, quote))
+    }
+
     /// Writes a series of one or more structs to a delimited file.  If `quote` is true then fields
     /// will be quoted as necessary, otherwise they will never be quoted.
     pub fn write<S, P>(
@@ -180,19 +289,7 @@ impl DelimFile {
         S: Serialize,
         P: AsRef<Path>,
     {
-        let write = self.io.new_writer(path)?;
-
-        let mut writer = WriterBuilder::new()
-            .delimiter(delimiter)
-            .has_headers(true)
-            .quote_style(if quote { QuoteStyle::Necessary } else { QuoteStyle::Never })
-            .from_writer(write);
-
-        for rec in recs {
-            writer.serialize(rec).map_err(FgError::ConversionError)?;
-        }
-
-        writer.flush().map_err(FgError::IoError)
+        self.new_writer(path, delimiter, quote)?.write_all(recs)
     }
 
     /// Writes structs implementing `[Serialize]` to a file with tab separators between fields.
@@ -221,22 +318,7 @@ impl DelimFile {
         D: DeserializeOwned,
         P: AsRef<Path>,
     {
-        let read = self.io.new_reader(path)?;
-
-        let mut reader = ReaderBuilder::new()
-            .delimiter(delimiter)
-            .has_headers(true)
-            .quoting(quote)
-            .from_reader(read);
-
-        let mut results = vec![];
-
-        for result in reader.deserialize::<D>() {
-            let rec = result.map_err(FgError::ConversionError)?;
-            results.push(rec);
-        }
-
-        Ok(results)
+        self.new_reader(path, delimiter, quote)?.collect()
     }
 
     /// Reads structs implementing `[Deserialize]` from a file with tab separators between fields.
