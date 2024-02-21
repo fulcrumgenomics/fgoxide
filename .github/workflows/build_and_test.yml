@@ -58,6 +58,12 @@ jobs:
           command: clippy
           args: -- -D warnings
 
+      - name: Run cargo clippy on tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --tests -- -D warnings
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}

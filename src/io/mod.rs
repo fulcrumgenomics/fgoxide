@@ -365,7 +365,7 @@ mod tests {
         let io = Io::default();
         io.write_lines(&f1, &lines).unwrap();
         let strings: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-        io.write_lines(&f2, &strings).unwrap();
+        io.write_lines(&f2, strings).unwrap();
 
         let r1 = io.read_lines(&f1).unwrap();
         let r2 = io.read_lines(&f2).unwrap();
@@ -382,8 +382,8 @@ mod tests {
         let gzipped = tempdir.path().join("gzipped.txt.gz");
 
         let io = Io::default();
-        io.write_lines(&text, &mut lines.iter()).unwrap();
-        io.write_lines(&gzipped, &mut lines.iter()).unwrap();
+        io.write_lines(&text, lines.iter()).unwrap();
+        io.write_lines(&gzipped, lines.iter()).unwrap();
 
         let r1 = io.read_lines(&text).unwrap();
         let r2 = io.read_lines(&gzipped).unwrap();
