@@ -230,7 +230,7 @@ mod tests {
         #[case] chunk_size: usize,
         #[case] buffer_size: usize,
     ) {
-        let test_vec: Vec<usize> = (0..1_000_000).into_iter().collect();
+        let test_vec: Vec<usize> = (0..1_000_000).collect();
         let test_vec2 = test_vec.clone();
 
         let mut regular_iter = test_vec.into_iter();
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn test_low_bound_on_channel_for_blocking() {
-        let chunked_iter = (0..100_000).into_iter().read_ahead(8, 1);
+        let chunked_iter = (0..100_000).read_ahead(8, 1);
         for i in chunked_iter {
             // Do some work so iter will get consumed
             let _ = i % 2;
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected error message")]
     fn test_panic_occurring_mid_chunk_returns_results_until_panic() {
-        let mut test_iter = FailingIter::new().into_iter().read_ahead(8, 1);
+        let mut test_iter = FailingIter::new().read_ahead(8, 1);
 
         for _ in 0..FAIL_POINT {
             panic::catch_unwind(AssertUnwindSafe(|| {
@@ -419,7 +419,7 @@ mod tests {
     #[should_panic(expected = "expected error message")]
     fn test_panic_occurring_after_iteration_raises() {
         {
-            let mut test_iter = ExitFailingIter::new().into_iter().read_ahead(8, 1);
+            let mut test_iter = ExitFailingIter::new().read_ahead(8, 1);
 
             for _ in 0..FAIL_POINT {
                 panic::catch_unwind(AssertUnwindSafe(|| {
