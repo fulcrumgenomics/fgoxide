@@ -41,6 +41,7 @@
 //!     Ok(())
 //! }
 //! ```
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::marker::PhantomData;
@@ -198,12 +199,13 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
 
     fn validate_header(header: &StringRecord, delimiter: u8) -> Result<()> {
         let delim = String::from_utf8(vec![delimiter]).unwrap();
-        let found_header_parts: Vec<&str> = header.iter().collect();
+        let found_header_parts: HashSet<&str> = header.iter().collect();
         let expected_header_parts = serde_aux::prelude::serde_introspect::<D>();
 
         // Expected header fields must be a _subset_ of found header fields
         let ok = expected_header_parts.iter().all(|field| found_header_parts.contains(field));
         if !ok {
+            let found_header_parts: Vec<&str> = header.iter().collect();
             return Err(FgError::DelimFileHeaderError {
                 expected: expected_header_parts.join(&delim),
                 found: found_header_parts.join(&delim),
