@@ -175,7 +175,8 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
         // NB: csv_reader.has_header() does not actually check for existence of a header, but only
         // checks that the reader is configured to read a header.
 
-        // If the header is not empty (try to parse it)
+        // Empty files are valid but will have empty headers.
+        // So validate the header only if one is found for a non-empty file.
         let header = csv_reader.headers().map_err(FgError::ConversionError)?.to_owned();
         if !header.is_empty() {
             Self::validate_header(&header, delimiter)?
@@ -202,12 +203,10 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
 
         // Expected header fields must be a _subset_ of found header fields
         let ok = expected_header_parts.iter().all(|field| found_header_parts.contains(field));
-
         if !ok {
-            let expected = expected_header_parts.join(&delim);
             return Err(FgError::DelimFileHeaderError {
-                expected,
-                found: header.as_slice().to_owned(),
+                expected: expected_header_parts.join(&delim),
+                found: found_header_parts.join(&delim),
             });
         }
 
@@ -480,20 +479,34 @@ mod tests {
     }
 
     #[test]
-    fn test_header_error() {
-        let recs = vec![
-            RecWithSkipDe { s: "Hello".to_string(), i: 123, b: true, o: None },
-            RecWithSkipDe { s: "A,B,C".to_string(), i: 456, b: false, o: Some(123.45) },
-        ];
-        let tmp = TempDir::new().unwrap();
-        let csv = tmp.path().join("recs.csv");
-        let df = DelimFile::default();
-        df.write_csv(&csv, recs).unwrap();
+    fn test_skip_empty_lines() {
+        // Check to see that csv readers skip empty lines
+        let lines = vec!["", "", "s,i,b,o", "", "hello,123,true,123.4"];
+        let tempdir = TempDir::new().unwrap();
 
+        let csv = tempdir.path().join("bad_header.csv");
+        let io = Io::default();
+        io.write_lines(&csv, lines).unwrap();
+
+        let df = DelimFile::default();
+        let result: Result<Vec<Rec>> = df.read_csv(&csv);
+        let from_csv = result.unwrap();
+        assert_eq!(from_csv[0], Rec { s: "hello".to_owned(), i: 123, b: true, o: Some(123.4) })
+    }
+
+    #[test]
+    fn test_header_error() {
+        let lines = vec!["s,i,b,o", "hello,123,true,123.4"];
+        let tempdir = TempDir::new().unwrap();
+        let csv = tempdir.path().join("bad_header.csv");
+        let io = Io::default();
+        io.write_lines(&csv, lines).unwrap();
+
+        let df = DelimFile::default();
         let result: Result<Vec<RecWithSkipDe>> = df.read_tsv(&csv);
         let err = result.unwrap_err();
 
-        // Serialized CSV should contain all fields, deserializing should skip "o"
+        // All fields should be serialized, deserialization expects to skip "o"
         if let FgError::DelimFileHeaderError { expected, found } = err {
             assert_eq!(expected, "s\ti\tb");
             assert_eq!(found, "s,i,b,o");
@@ -501,22 +514,41 @@ mod tests {
             panic!()
         }
 
-        let recs = vec![
-            RecWithSkipSe { s: "Hello".to_string(), i: 123, b: true, o: None },
-            RecWithSkipSe { s: "A,B,C".to_string(), i: 456, b: false, o: Some(123.45) },
-        ];
-        let tmp = TempDir::new().unwrap();
-        let csv = tmp.path().join("recs.csv");
-        let df = DelimFile::default();
-        df.write_csv(&csv, recs).unwrap();
+        let lines = vec!["s,i,b", "hello,123,true"];
+        let tempdir = TempDir::new().unwrap();
+        let csv = tempdir.path().join("bad_header.csv");
+        let io = Io::default();
+        io.write_lines(&csv, lines).unwrap();
 
+        let df = DelimFile::default();
         let result: Result<Vec<RecWithSkipSe>> = df.read_tsv(&csv);
         let err = result.unwrap_err();
 
-        // Serialized CSV should contain should skip "o", deserailize should expect all fields
+        // All fields but "o" should be serialized, deserialization should expect all fields
         if let FgError::DelimFileHeaderError { expected, found } = err {
             assert_eq!(expected, "s\ti\tb\to");
             assert_eq!(found, "s,i,b");
+        } else {
+            panic!()
+        }
+    }
+
+    #[test]
+    fn test_header_missing() {
+        let lines = vec!["", "hello,123,true,123.4"];
+        let tempdir = TempDir::new().unwrap();
+        let csv = tempdir.path().join("bad_header.csv");
+        let io = Io::default();
+        io.write_lines(&csv, &lines).unwrap();
+
+        let df = DelimFile::default();
+        let result: Result<Vec<Rec>> = df.read_csv(&csv);
+        let err = result.unwrap_err();
+
+        if let FgError::DelimFileHeaderError { expected, found } = err {
+            assert_eq!(expected, "s,i,b,o");
+            // NB: empty lines are skipped
+            assert_eq!(found, lines[1].to_owned());
         } else {
             panic!()
         }
