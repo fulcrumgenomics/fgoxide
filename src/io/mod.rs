@@ -148,7 +148,7 @@ impl Io {
         let mut out = self.new_writer(p)?;
         for line in lines {
             out.write_all(line.as_ref().as_bytes()).map_err(FgError::IoError)?;
-            out.write_all(&[b'\n']).map_err(FgError::IoError)?;
+            out.write_all(b"\n").map_err(FgError::IoError)?;
         }
 
         out.flush().map_err(FgError::IoError)
