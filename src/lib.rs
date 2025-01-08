@@ -16,6 +16,9 @@ pub enum FgError {
 
     #[error("Error parsing/formatting delimited data.")]
     ConversionError(#[from] csv::Error),
+
+    #[error("Error parsing delimited data file header.")]
+    DelimFileHeaderError { expected: String, found: String },
 }
 
 /// Result type that should be used everywhere
