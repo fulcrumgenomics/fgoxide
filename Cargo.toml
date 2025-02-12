@@ -24,6 +24,7 @@ flate2 = "^1"
 # For auto-serialization of structs to csv/tsv
 csv = "^1"
 serde = { version = "^1.0.123", features = ["derive"] }
+serde-aux = "^4"
 
 [dev-dependencies]
 tempfile = "3.2.0"
