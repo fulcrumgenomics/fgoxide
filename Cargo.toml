@@ -1,6 +1,6 @@
 [package]
 name = "fgoxide"
-version = "0.4.1-rc.1"
+version = "0.5.0"
 edition = "2021"
 authors = [
     "Tim Fennell <tim@fulcrumgenomics.com>",
