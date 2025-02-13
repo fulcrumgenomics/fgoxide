@@ -83,7 +83,7 @@ impl Io {
     }
 
     /// Returns true if the path ends with a recognized GZIP file extension
-    fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
+    pub fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
         if let Some(ext) = p.as_ref().extension() {
             match ext.to_str() {
                 Some(x) => GZIP_EXTENSIONS.contains(&x),
