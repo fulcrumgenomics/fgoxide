@@ -1,10 +1,10 @@
 [package]
 name = "fgoxide"
-version = "0.3.0"
+version = "0.4.1-rc.1"
 edition = "2021"
 authors = [
-    "Tim Fennell <tim@fulcrumgenomics.com",
-    "Seth Stadick <seth@fulcrumgenomics.com>"
+    "Tim Fennell <tim@fulcrumgenomics.com>",
+    "Nils Homer <nils@fulcrumgenomics.com>"
 ]
 license = "MIT"
 repository = "https://github.com/fulcrumgenomics/fgoxide"
@@ -13,6 +13,7 @@ documentation = "https://docs.rs/fgoxide"
 readme = "README.md"
 categories = ["rust-patterns"]
 keywords = ["utilities"]
+rust-version = "1.58.1"
 
 [dependencies]
 thiserror = "^1"
@@ -21,8 +22,9 @@ thiserror = "^1"
 flate2 = "^1"
 
 # For auto-serialization of structs to csv/tsv
-csv = "^1"
+csv = "^1, <1.2"
 serde = { version = "^1.0.123", features = ["derive"] }
+serde-aux = "^4"
 
 [dev-dependencies]
 tempfile = "3.2.0"
