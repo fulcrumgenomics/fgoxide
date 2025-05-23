@@ -127,7 +127,7 @@ impl Io {
     }
 
     /// Reads lines from a file into a Vec
-    pub fn read_lines<P>(&self, p: &P) -> Result<Vec<String>>
+    pub fn read_lines<P>(&self, p: P) -> Result<Vec<String>>
     where
         P: AsRef<Path>,
     {
@@ -141,7 +141,7 @@ impl Io {
     }
 
     /// Writes all the lines from an iterable of string-like values to a file, separated by new lines.
-    pub fn write_lines<P, S>(&self, p: &P, lines: impl IntoIterator<Item = S>) -> Result<()>
+    pub fn write_lines<P, S>(&self, p: P, lines: impl IntoIterator<Item = S>) -> Result<()>
     where
         P: AsRef<Path>,
         S: AsRef<str>,
@@ -308,7 +308,7 @@ impl DelimFile {
     /// will be quoted as necessary, otherwise they will never be quoted.
     pub fn write<S, P>(
         &self,
-        path: &P,
+        path: P,
         recs: impl IntoIterator<Item = S>,
         delimiter: u8,
         quote: bool,
@@ -321,7 +321,7 @@ impl DelimFile {
     }
 
     /// Writes structs implementing `[Serialize]` to a file with tab separators between fields.
-    pub fn write_tsv<S, P>(&self, path: &P, recs: impl IntoIterator<Item = S>) -> Result<()>
+    pub fn write_tsv<S, P>(&self, path: P, recs: impl IntoIterator<Item = S>) -> Result<()>
     where
         S: Serialize,
         P: AsRef<Path>,
@@ -330,7 +330,7 @@ impl DelimFile {
     }
 
     /// Writes structs implementing `[Serialize]` to a file with comma separators between fields.
-    pub fn write_csv<S, P>(&self, path: &P, recs: impl IntoIterator<Item = S>) -> Result<()>
+    pub fn write_csv<S, P>(&self, path: P, recs: impl IntoIterator<Item = S>) -> Result<()>
     where
         S: Serialize,
         P: AsRef<Path>,
@@ -341,7 +341,7 @@ impl DelimFile {
     /// Reads structs implementing `[Deserialize]` from a file with the given separators between fields.
     /// If `quote` is true then fields surrounded by quotes are parsed, otherwise quotes are not
     /// considered.
-    pub fn read<D, P>(&self, path: &P, delimiter: u8, quote: bool) -> Result<Vec<D>>
+    pub fn read<D, P>(&self, path: P, delimiter: u8, quote: bool) -> Result<Vec<D>>
     where
         D: DeserializeOwned,
         P: AsRef<Path>,
@@ -350,7 +350,7 @@ impl DelimFile {
     }
 
     /// Reads structs implementing `[Deserialize]` from a file with tab separators between fields.
-    pub fn read_tsv<D, P>(&self, path: &P) -> Result<Vec<D>>
+    pub fn read_tsv<D, P>(&self, path: P) -> Result<Vec<D>>
     where
         D: DeserializeOwned,
         P: AsRef<Path>,
@@ -359,7 +359,7 @@ impl DelimFile {
     }
 
     /// Reads structs implementing `[Deserialize]` from a file with tab separators between fields.
-    pub fn read_csv<D, P>(&self, path: &P) -> Result<Vec<D>>
+    pub fn read_csv<D, P>(&self, path: P) -> Result<Vec<D>>
     where
         D: DeserializeOwned,
         P: AsRef<Path>,
