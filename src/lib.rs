@@ -22,4 +22,4 @@ pub enum FgError {
 }
 
 /// Result type that should be used everywhere
-type Result<A> = std::result::Result<A, FgError>;
+pub type Result<A> = std::result::Result<A, FgError>;
