@@ -4,7 +4,7 @@
 //! I/O activities, such a slurping a file by lines, or writing a collection of `Serializable`
 //! objects to a path.
 //!
-//! The two core parts of this module are teh [`Io`] and [`DelimFile`] structs. These structs provide
+//! The two core parts of this module are the [`Io`] and [`DelimFile`] structs. These structs provide
 //! methods for reading and writing to files that transparently handle compression based on the
 //! file extension of the path given to the methods.
 //!
@@ -82,7 +82,28 @@ impl Io {
         Io { compression: flate2::Compression::new(compression), buffer_size }
     }
 
+    /// Creates a new Io instance with the given compression level and default buffer size.
+    pub fn with_compression_level(level: u32) -> Self {
+        Self::new(level, BUFFER_SIZE)
+    }
+
+    /// Creates a new Io instance with no compression.
+    pub fn uncompressed() -> Self {
+        Self::new(0, BUFFER_SIZE)
+    }
+
+    /// Creates a new Io instance with maximum compression.
+    pub fn best_compression() -> Self {
+        Self::new(9, BUFFER_SIZE)
+    }
+
+    /// Creates a new Io instance with fast compression (level 1).
+    pub fn fast_compression() -> Self {
+        Self::new(1, BUFFER_SIZE)
+    }
+
     /// Returns true if the path ends with a recognized GZIP file extension
+    #[must_use]
     pub fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
         if let Some(ext) = p.as_ref().extension() {
             match ext.to_str() {
@@ -131,13 +152,7 @@ impl Io {
     where
         P: AsRef<Path>,
     {
-        let r = self.new_reader(p)?;
-        let mut v = Vec::new();
-        for result in r.lines() {
-            v.push(result.map_err(FgError::IoError)?);
-        }
-
-        Ok(v)
+        self.new_reader(p)?.lines().collect::<std::io::Result<Vec<_>>>().map_err(FgError::IoError)
     }
 
     /// Writes all the lines from an iterable of string-like values to a file, separated by new lines.
@@ -188,6 +203,7 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
     }
 
     /// Returns the contents of the header row.
+    #[must_use]
     pub fn header(&self) -> &StringRecord {
         &self.header
     }
@@ -198,7 +214,9 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
     }
 
     fn validate_header(header: &StringRecord, delimiter: u8) -> Result<()> {
-        let delim = String::from_utf8(vec![delimiter]).unwrap();
+        // Delimiter should be ASCII for delimited files, but handle edge cases gracefully
+        let delimiter_byte = [delimiter];
+        let delim = std::str::from_utf8(&delimiter_byte).unwrap_or(","); // fallback to comma if somehow not valid UTF-8
         let found_header_parts: HashSet<&str> = header.iter().collect();
         let expected_header_parts = serde_aux::prelude::serde_introspect::<D>();
 
@@ -207,8 +225,8 @@ impl<D: DeserializeOwned> DelimFileReader<D> {
         if !ok {
             let found_header_parts: Vec<&str> = header.iter().collect();
             return Err(FgError::DelimFileHeaderError {
-                expected: expected_header_parts.join(&delim),
-                found: found_header_parts.join(&delim),
+                expected: expected_header_parts.join(delim),
+                found: found_header_parts.join(delim),
             });
         }
 
