@@ -150,4 +150,32 @@ impl Template {
 
         Ok(template)
     }
+
+    /// Returns the query name of this template, if any records are present.
+    ///
+    /// The query name is taken from the first available record in this order:
+    /// r1, r2, r1_secondaries, r2_secondaries, r1_supplementaries, r2_supplementaries.
+    ///
+    /// Returns `None` if the template contains no records.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use fgoxide::bam::Template;
+    ///
+    /// let template = Template::build(records)?;
+    /// if let Some(name) = template.name() {
+    ///     println!("Template name: {}", String::from_utf8_lossy(name));
+    /// }
+    /// ```
+    pub fn name(&self) -> Option<&[u8]> {
+        self.r1
+            .as_ref()
+            .or(self.r2.as_ref())
+            .map(|r| r.qname())
+            .or_else(|| self.r1_secondaries.first().map(|r| r.qname()))
+            .or_else(|| self.r2_secondaries.first().map(|r| r.qname()))
+            .or_else(|| self.r1_supplementaries.first().map(|r| r.qname()))
+            .or_else(|| self.r2_supplementaries.first().map(|r| r.qname()))
+    }
 }
