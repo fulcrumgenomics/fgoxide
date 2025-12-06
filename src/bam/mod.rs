@@ -516,4 +516,95 @@ mod tests {
             assert!(matches!(result.unwrap_err(), TemplateError::MultiplePrimaryR1 { .. }));
         }
     }
+
+    mod edge_case_tests {
+        use super::*;
+
+        #[test]
+        fn test_empty_template() {
+            let template = Template::build(vec![]).unwrap();
+
+            assert!(template.r1.is_none());
+            assert!(template.r2.is_none());
+            assert!(template.r1_secondaries.is_empty());
+            assert!(template.r2_secondaries.is_empty());
+            assert!(template.r1_supplementaries.is_empty());
+            assert!(template.r2_supplementaries.is_empty());
+            assert!(template.name().is_none());
+            assert_eq!(template.all_recs().count(), 0);
+            assert_eq!(template.primary_recs().count(), 0);
+        }
+
+        #[test]
+        fn test_name_from_secondary_only() {
+            // Template with only secondary alignments (no primaries)
+            let sec = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+
+            let template = Template::build(vec![sec]).unwrap();
+
+            assert!(template.r1.is_none());
+            assert_eq!(template.name(), Some(b"read1".as_slice()));
+        }
+
+        #[test]
+        fn test_name_from_supplementary_only() {
+            // Template with only supplementary alignments (no primaries)
+            let supp = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
+
+            let template = Template::build(vec![supp]).unwrap();
+
+            assert!(template.r1.is_none());
+            assert_eq!(template.name(), Some(b"read1".as_slice()));
+        }
+
+        #[test]
+        fn test_default_template() {
+            let template = Template::default();
+
+            assert!(template.r1.is_none());
+            assert!(template.r2.is_none());
+            assert!(template.r1_secondaries.is_empty());
+            assert!(template.r2_secondaries.is_empty());
+            assert!(template.r1_supplementaries.is_empty());
+            assert!(template.r2_supplementaries.is_empty());
+        }
+
+        #[test]
+        fn test_all_recs_ordering() {
+            // Verify the documented ordering of all_recs()
+            let r1_primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2_primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r1_sec = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+            let r2_sec = make_record(b"read1", PAIRED | LAST_IN_PAIR | SECONDARY);
+            let r1_supp = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
+            let r2_supp = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
+
+            let template =
+                Template::build(vec![r1_primary, r2_primary, r1_sec, r2_sec, r1_supp, r2_supp])
+                    .unwrap();
+
+            let recs: Vec<_> = template.all_recs().collect();
+            assert_eq!(recs.len(), 6);
+
+            // Verify ordering: r1, r2, r1_secondaries, r2_secondaries,
+            // r1_supplementaries, r2_supplementaries
+            assert!(recs[0].is_first_in_template());
+            assert!(!recs[0].is_secondary() && !recs[0].is_supplementary());
+
+            assert!(recs[1].is_last_in_template());
+            assert!(!recs[1].is_secondary() && !recs[1].is_supplementary());
+
+            assert!(recs[2].is_first_in_template());
+            assert!(recs[2].is_secondary());
+
+            assert!(recs[3].is_last_in_template());
+            assert!(recs[3].is_secondary());
+
+            assert!(recs[4].is_first_in_template());
+            assert!(recs[4].is_supplementary());
+
+            assert!(recs[5].is_last_in_template());
+            assert!(recs[5].is_supplementary());
+        }
+    }
 }
