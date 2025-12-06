@@ -178,4 +178,34 @@ impl Template {
             .or_else(|| self.r1_supplementaries.first().map(|r| r.qname()))
             .or_else(|| self.r2_supplementaries.first().map(|r| r.qname()))
     }
+
+    /// Returns an iterator over all records in the template.
+    ///
+    /// Records are yielded in the following order:
+    /// 1. Primary R1 (if present)
+    /// 2. Primary R2 (if present)
+    /// 3. R1 secondaries
+    /// 4. R2 secondaries
+    /// 5. R1 supplementaries
+    /// 6. R2 supplementaries
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use fgoxide::bam::Template;
+    ///
+    /// let template = Template::build(records)?;
+    /// for record in template.all_recs() {
+    ///     println!("Record: {:?}", record.qname());
+    /// }
+    /// ```
+    pub fn all_recs(&self) -> impl Iterator<Item = &Record> {
+        self.r1
+            .iter()
+            .chain(self.r2.iter())
+            .chain(self.r1_secondaries.iter())
+            .chain(self.r2_secondaries.iter())
+            .chain(self.r1_supplementaries.iter())
+            .chain(self.r2_supplementaries.iter())
+    }
 }
