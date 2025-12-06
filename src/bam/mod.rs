@@ -228,3 +228,100 @@ impl Template {
         self.r1.iter().chain(self.r2.iter())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a BAM record with specific flags and query name.
+    fn make_record(qname: &[u8], flags: u16) -> Record {
+        let mut rec = Record::new();
+        rec.set(qname, None, b"ACGT", &[30, 30, 30, 30]);
+        rec.set_flags(flags);
+        rec
+    }
+
+    // FLAG constants for readability
+    const PAIRED: u16 = 0x1;
+    const FIRST_IN_PAIR: u16 = 0x40;
+    const LAST_IN_PAIR: u16 = 0x80;
+    #[allow(dead_code)] // Used in later test commits
+    const SECONDARY: u16 = 0x100;
+    #[allow(dead_code)] // Used in later test commits
+    const SUPPLEMENTARY: u16 = 0x800;
+
+    mod paired_end_tests {
+        use super::*;
+
+        #[test]
+        fn test_build_paired_end_primaries() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let template = Template::build(vec![r1, r2]).unwrap();
+
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_some());
+            assert_eq!(template.r1.as_ref().unwrap().qname(), b"read1");
+            assert_eq!(template.r2.as_ref().unwrap().qname(), b"read1");
+            assert!(template.r1_secondaries.is_empty());
+            assert!(template.r2_secondaries.is_empty());
+            assert!(template.r1_supplementaries.is_empty());
+            assert!(template.r2_supplementaries.is_empty());
+        }
+
+        #[test]
+        fn test_name_returns_query_name() {
+            let r1 = make_record(b"my_read", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"my_read", PAIRED | LAST_IN_PAIR);
+
+            let template = Template::build(vec![r1, r2]).unwrap();
+
+            assert_eq!(template.name(), Some(b"my_read".as_slice()));
+        }
+
+        #[test]
+        fn test_all_recs_iterator() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let template = Template::build(vec![r1, r2]).unwrap();
+
+            let all: Vec<_> = template.all_recs().collect();
+            assert_eq!(all.len(), 2);
+        }
+
+        #[test]
+        fn test_primary_recs_iterator() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let template = Template::build(vec![r1, r2]).unwrap();
+
+            let primaries: Vec<_> = template.primary_recs().collect();
+            assert_eq!(primaries.len(), 2);
+        }
+
+        #[test]
+        fn test_r1_only() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+
+            let template = Template::build(vec![r1]).unwrap();
+
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_none());
+            assert_eq!(template.name(), Some(b"read1".as_slice()));
+        }
+
+        #[test]
+        fn test_r2_only() {
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let template = Template::build(vec![r2]).unwrap();
+
+            assert!(template.r1.is_none());
+            assert!(template.r2.is_some());
+            assert_eq!(template.name(), Some(b"read1".as_slice()));
+        }
+    }
+}
