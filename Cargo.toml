@@ -18,6 +18,9 @@ rust-version = "1.85"
 [dependencies]
 thiserror = "^2"
 
+# For BAM/SAM file handling
+rust-htslib = "0.51"
+
 # For auto-gzip handing of files
 flate2 = "^1"
 
