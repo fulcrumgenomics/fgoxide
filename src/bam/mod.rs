@@ -245,9 +245,7 @@ mod tests {
     const PAIRED: u16 = 0x1;
     const FIRST_IN_PAIR: u16 = 0x40;
     const LAST_IN_PAIR: u16 = 0x80;
-    #[allow(dead_code)] // Used in later test commits
     const SECONDARY: u16 = 0x100;
-    #[allow(dead_code)] // Used in later test commits
     const SUPPLEMENTARY: u16 = 0x800;
 
     mod paired_end_tests {
@@ -348,6 +346,109 @@ mod tests {
 
             assert_eq!(template.all_recs().count(), 1);
             assert_eq!(template.primary_recs().count(), 1);
+        }
+    }
+
+    mod secondary_supplementary_tests {
+        use super::*;
+
+        #[test]
+        fn test_secondary_r1_alignment() {
+            let primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let secondary = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+
+            let template = Template::build(vec![primary, secondary]).unwrap();
+
+            assert!(template.r1.is_some());
+            assert_eq!(template.r1_secondaries.len(), 1);
+            assert!(template.r1_supplementaries.is_empty());
+        }
+
+        #[test]
+        fn test_secondary_r2_alignment() {
+            let primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let secondary = make_record(b"read1", PAIRED | LAST_IN_PAIR | SECONDARY);
+
+            let template = Template::build(vec![primary, secondary]).unwrap();
+
+            assert!(template.r2.is_some());
+            assert_eq!(template.r2_secondaries.len(), 1);
+            assert!(template.r2_supplementaries.is_empty());
+        }
+
+        #[test]
+        fn test_supplementary_r1_alignment() {
+            let primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let supplementary = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
+
+            let template = Template::build(vec![primary, supplementary]).unwrap();
+
+            assert!(template.r1.is_some());
+            assert!(template.r1_secondaries.is_empty());
+            assert_eq!(template.r1_supplementaries.len(), 1);
+        }
+
+        #[test]
+        fn test_supplementary_r2_alignment() {
+            let primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let supplementary = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
+
+            let template = Template::build(vec![primary, supplementary]).unwrap();
+
+            assert!(template.r2.is_some());
+            assert!(template.r2_secondaries.is_empty());
+            assert_eq!(template.r2_supplementaries.len(), 1);
+        }
+
+        #[test]
+        fn test_secondary_and_supplementary_goes_to_secondaries() {
+            // Per fgbio convention: records with both secondary AND supplementary flags
+            // go to the secondaries list (secondary is checked first)
+            let primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let both = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY | SUPPLEMENTARY);
+
+            let template = Template::build(vec![primary, both]).unwrap();
+
+            assert!(template.r1.is_some());
+            assert_eq!(template.r1_secondaries.len(), 1);
+            assert!(template.r1_supplementaries.is_empty());
+        }
+
+        #[test]
+        fn test_multiple_secondaries_and_supplementaries() {
+            let r1_primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2_primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r1_sec1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+            let r1_sec2 = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+            let r2_sec1 = make_record(b"read1", PAIRED | LAST_IN_PAIR | SECONDARY);
+            let r1_supp1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
+            let r2_supp1 = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
+            let r2_supp2 = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
+
+            let template = Template::build(vec![
+                r1_primary, r2_primary, r1_sec1, r1_sec2, r2_sec1, r1_supp1, r2_supp1, r2_supp2,
+            ])
+            .unwrap();
+
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_some());
+            assert_eq!(template.r1_secondaries.len(), 2);
+            assert_eq!(template.r2_secondaries.len(), 1);
+            assert_eq!(template.r1_supplementaries.len(), 1);
+            assert_eq!(template.r2_supplementaries.len(), 2);
+        }
+
+        #[test]
+        fn test_all_recs_includes_all_alignments() {
+            let r1_primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2_primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r1_sec = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+            let r2_supp = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
+
+            let template = Template::build(vec![r1_primary, r2_primary, r1_sec, r2_supp]).unwrap();
+
+            assert_eq!(template.all_recs().count(), 4);
+            assert_eq!(template.primary_recs().count(), 2);
         }
     }
 }
