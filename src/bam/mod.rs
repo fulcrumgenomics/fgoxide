@@ -451,4 +451,69 @@ mod tests {
             assert_eq!(template.primary_recs().count(), 2);
         }
     }
+
+    mod validation_error_tests {
+        use super::*;
+
+        #[test]
+        fn test_mismatched_query_names_error() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"read2", PAIRED | LAST_IN_PAIR);
+
+            let result = Template::build(vec![r1, r2]);
+
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                TemplateError::MismatchedQueryNames { expected, found } => {
+                    assert_eq!(expected, "read1");
+                    assert_eq!(found, "read2");
+                }
+                _ => panic!("Expected MismatchedQueryNames error"),
+            }
+        }
+
+        #[test]
+        fn test_multiple_primary_r1_error() {
+            let r1a = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r1b = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+
+            let result = Template::build(vec![r1a, r1b]);
+
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                TemplateError::MultiplePrimaryR1 { name } => {
+                    assert_eq!(name, "read1");
+                }
+                _ => panic!("Expected MultiplePrimaryR1 error"),
+            }
+        }
+
+        #[test]
+        fn test_multiple_primary_r2_error() {
+            let r2a = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r2b = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let result = Template::build(vec![r2a, r2b]);
+
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                TemplateError::MultiplePrimaryR2 { name } => {
+                    assert_eq!(name, "read1");
+                }
+                _ => panic!("Expected MultiplePrimaryR2 error"),
+            }
+        }
+
+        #[test]
+        fn test_multiple_unpaired_primaries_error() {
+            // Two unpaired reads should fail since both go to r1
+            let r1 = make_record(b"read1", 0);
+            let r2 = make_record(b"read1", 0);
+
+            let result = Template::build(vec![r1, r2]);
+
+            assert!(result.is_err());
+            assert!(matches!(result.unwrap_err(), TemplateError::MultiplePrimaryR1 { .. }));
+        }
+    }
 }
