@@ -324,4 +324,30 @@ mod tests {
             assert_eq!(template.name(), Some(b"read1".as_slice()));
         }
     }
+
+    mod single_end_tests {
+        use super::*;
+
+        #[test]
+        fn test_unpaired_read_goes_to_r1() {
+            // Unpaired reads (no PAIRED flag) should go to r1
+            let rec = make_record(b"fragment", 0);
+
+            let template = Template::build(vec![rec]).unwrap();
+
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_none());
+            assert_eq!(template.name(), Some(b"fragment".as_slice()));
+        }
+
+        #[test]
+        fn test_unpaired_read_iterators() {
+            let rec = make_record(b"fragment", 0);
+
+            let template = Template::build(vec![rec]).unwrap();
+
+            assert_eq!(template.all_recs().count(), 1);
+            assert_eq!(template.primary_recs().count(), 1);
+        }
+    }
 }
