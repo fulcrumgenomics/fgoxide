@@ -208,4 +208,23 @@ impl Template {
             .chain(self.r1_supplementaries.iter())
             .chain(self.r2_supplementaries.iter())
     }
+
+    /// Returns an iterator over only the primary records (r1 and r2).
+    ///
+    /// This is a convenience method that iterates over just the primary alignments,
+    /// yielding R1 first (if present), then R2 (if present).
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use fgoxide::bam::Template;
+    ///
+    /// let template = Template::build(records)?;
+    /// for primary in template.primary_recs() {
+    ///     println!("Primary record: {:?}", primary.qname());
+    /// }
+    /// ```
+    pub fn primary_recs(&self) -> impl Iterator<Item = &Record> {
+        self.r1.iter().chain(self.r2.iter())
+    }
 }
