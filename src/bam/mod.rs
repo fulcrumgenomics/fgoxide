@@ -396,6 +396,7 @@ where
     /// let reader = Reader::from_path("queryname_sorted.bam")?;
     /// let templates = TemplateIterator::new(reader.records());
     /// ```
+    #[must_use]
     pub fn new(iter: I) -> Self {
         Self { inner: iter.peekable() }
     }
