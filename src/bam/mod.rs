@@ -97,7 +97,7 @@ impl Template {
     /// let records: Vec<Record> = vec![/* records with same qname */];
     /// let template = Template::build(records)?;
     /// ```
-    pub fn build(recs: Vec<Record>) -> Result<Self, TemplateError> {
+    pub fn build(recs: impl IntoIterator<Item = Record>) -> Result<Self, TemplateError> {
         let mut template = Template::default();
         let mut expected_name: Option<Vec<u8>> = None;
 
