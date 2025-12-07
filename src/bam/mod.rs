@@ -455,14 +455,13 @@ mod tests {
 
             let result = Template::build(vec![r1, r2]);
 
-            assert!(result.is_err());
-            match result.unwrap_err() {
-                TemplateError::MismatchedQueryNames { expected, found } => {
-                    assert_eq!(expected, "read1");
-                    assert_eq!(found, "read2");
+            assert_eq!(
+                result.unwrap_err(),
+                TemplateError::MismatchedQueryNames {
+                    expected: "read1".to_string(),
+                    found: "read2".to_string(),
                 }
-                _ => panic!("Expected MismatchedQueryNames error"),
-            }
+            );
         }
 
         #[test]
@@ -472,13 +471,10 @@ mod tests {
 
             let result = Template::build(vec![r1a, r1b]);
 
-            assert!(result.is_err());
-            match result.unwrap_err() {
-                TemplateError::MultiplePrimaryR1 { name } => {
-                    assert_eq!(name, "read1");
-                }
-                _ => panic!("Expected MultiplePrimaryR1 error"),
-            }
+            assert_eq!(
+                result.unwrap_err(),
+                TemplateError::MultiplePrimaryR1 { name: "read1".to_string() }
+            );
         }
 
         #[test]
@@ -488,13 +484,10 @@ mod tests {
 
             let result = Template::build(vec![r2a, r2b]);
 
-            assert!(result.is_err());
-            match result.unwrap_err() {
-                TemplateError::MultiplePrimaryR2 { name } => {
-                    assert_eq!(name, "read1");
-                }
-                _ => panic!("Expected MultiplePrimaryR2 error"),
-            }
+            assert_eq!(
+                result.unwrap_err(),
+                TemplateError::MultiplePrimaryR2 { name: "read1".to_string() }
+            );
         }
 
         #[test]
@@ -505,8 +498,10 @@ mod tests {
 
             let result = Template::build(vec![r1, r2]);
 
-            assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), TemplateError::MultiplePrimaryR1 { .. }));
+            assert_eq!(
+                result.unwrap_err(),
+                TemplateError::MultiplePrimaryR1 { name: "read1".to_string() }
+            );
         }
     }
 
