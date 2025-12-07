@@ -370,10 +370,7 @@ impl Template {
 ///     println!("Template: {:?}", template.name());
 /// }
 /// ```
-pub struct TemplateIterator<I>
-where
-    I: Iterator<Item = Result<Record, rust_htslib::errors::Error>>,
-{
+pub struct TemplateIterator<I: Iterator> {
     inner: Peekable<I>,
 }
 
