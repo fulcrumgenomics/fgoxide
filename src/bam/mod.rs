@@ -421,26 +421,12 @@ where
 
         // Collect all records with the same query name
         let mut recs = Vec::new();
-        loop {
-            match self.inner.peek() {
-                Some(Ok(rec)) if rec.qname() == current_name.as_slice() => {
-                    // Safe to unwrap: we just peeked and confirmed it's Ok
-                    recs.push(self.inner.next().unwrap().unwrap());
-                }
-                Some(Ok(_)) => {
-                    // Different query name, stop collecting
-                    break;
-                }
-                Some(Err(_)) => {
-                    // Error encountered - but we have records collected already
-                    // Build template from what we have, error will be returned on next call
-                    break;
-                }
-                None => {
-                    // End of iterator
-                    break;
-                }
+        while let Some(Ok(rec)) = self.inner.peek() {
+            if rec.qname() != current_name.as_slice() {
+                break;
             }
+            // Safe to unwrap: we just peeked and confirmed it's Ok
+            recs.push(self.inner.next().unwrap().unwrap());
         }
 
         // Build the template from collected records
