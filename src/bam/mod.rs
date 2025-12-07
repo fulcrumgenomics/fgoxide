@@ -7,7 +7,7 @@ use rust_htslib::bam::Record;
 use thiserror::Error;
 
 /// Errors that can occur when building a [`Template`].
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum TemplateError {
     /// Records have mismatched query names.
     #[error("Records have mismatched query names: expected '{expected}', found '{found}'")]
