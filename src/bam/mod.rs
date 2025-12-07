@@ -169,14 +169,7 @@ impl Template {
     /// }
     /// ```
     pub fn name(&self) -> Option<&[u8]> {
-        self.r1
-            .as_ref()
-            .or(self.r2.as_ref())
-            .map(|r| r.qname())
-            .or_else(|| self.r1_secondaries.first().map(|r| r.qname()))
-            .or_else(|| self.r2_secondaries.first().map(|r| r.qname()))
-            .or_else(|| self.r1_supplementaries.first().map(|r| r.qname()))
-            .or_else(|| self.r2_supplementaries.first().map(|r| r.qname()))
+        self.all_recs().next().map(|r| r.qname())
     }
 
     /// Returns an iterator over all records in the template.
