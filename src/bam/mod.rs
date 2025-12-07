@@ -15,7 +15,7 @@
 //!   `fulcrumgenomics/fgpyo@416f0f64`.
 
 use rust_htslib::bam::Record;
-use std::iter::Peekable;
+use std::iter::{FusedIterator, Peekable};
 use thiserror::Error;
 
 /// Errors that can occur when building a [`Template`].
@@ -449,6 +449,11 @@ where
         // Build the template from collected records
         Some(Template::build(recs).map_err(TemplateIteratorError::TemplateBuildError))
     }
+}
+
+impl<I> FusedIterator for TemplateIterator<I> where
+    I: Iterator<Item = Result<Record, rust_htslib::errors::Error>>
+{
 }
 
 /// Extension trait for creating a [`TemplateIterator`] from BAM record iterators.
