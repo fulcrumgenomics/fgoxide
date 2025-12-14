@@ -70,7 +70,7 @@ pub struct Template {
 }
 
 impl Template {
-    /// Builds a `Template` from a collection of records sharing the same query name.
+    /// Creates a `Template` from a collection of records sharing the same query name.
     ///
     /// Records are classified based on their FLAG bits:
     /// - Primary records (neither secondary nor supplementary) are stored in `r1` or `r2`
@@ -95,9 +95,9 @@ impl Template {
     /// use rust_htslib::bam::Record;
     ///
     /// let records: Vec<Record> = vec![/* records with same qname */];
-    /// let template = Template::build(records)?;
+    /// let template = Template::new(records)?;
     /// ```
-    pub fn build(recs: impl IntoIterator<Item = Record>) -> Result<Self, TemplateError> {
+    pub fn new(recs: impl IntoIterator<Item = Record>) -> Result<Self, TemplateError> {
         let mut template = Template::default();
         let mut expected_name: Option<Vec<u8>> = None;
 
@@ -163,7 +163,7 @@ impl Template {
     /// ```ignore
     /// use fgoxide::bam::Template;
     ///
-    /// let template = Template::build(records)?;
+    /// let template = Template::new(records)?;
     /// if let Some(name) = template.name() {
     ///     println!("Template name: {}", String::from_utf8_lossy(name));
     /// }
@@ -187,7 +187,7 @@ impl Template {
     /// ```ignore
     /// use fgoxide::bam::Template;
     ///
-    /// let template = Template::build(records)?;
+    /// let template = Template::new(records)?;
     /// for record in template.all_recs() {
     ///     println!("Record: {:?}", record.qname());
     /// }
@@ -212,7 +212,7 @@ impl Template {
     /// ```ignore
     /// use fgoxide::bam::Template;
     ///
-    /// let template = Template::build(records)?;
+    /// let template = Template::new(records)?;
     /// for primary in template.primary_recs() {
     ///     println!("Primary record: {:?}", primary.qname());
     /// }
@@ -245,11 +245,11 @@ mod tests {
         use super::*;
 
         #[test]
-        fn test_build_paired_end_primaries() {
+        fn test_new_paired_end_primaries() {
             let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
 
-            let template = Template::build(vec![r1, r2]).unwrap();
+            let template = Template::new(vec![r1, r2]).unwrap();
 
             assert!(template.r1.is_some());
             assert!(template.r2.is_some());
@@ -266,7 +266,7 @@ mod tests {
             let r1 = make_record(b"my_read", PAIRED | FIRST_IN_PAIR);
             let r2 = make_record(b"my_read", PAIRED | LAST_IN_PAIR);
 
-            let template = Template::build(vec![r1, r2]).unwrap();
+            let template = Template::new(vec![r1, r2]).unwrap();
 
             assert_eq!(template.name(), Some(b"my_read".as_slice()));
         }
@@ -276,7 +276,7 @@ mod tests {
             let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
 
-            let template = Template::build(vec![r1, r2]).unwrap();
+            let template = Template::new(vec![r1, r2]).unwrap();
 
             let all: Vec<_> = template.all_recs().collect();
             assert_eq!(all.len(), 2);
@@ -287,7 +287,7 @@ mod tests {
             let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
 
-            let template = Template::build(vec![r1, r2]).unwrap();
+            let template = Template::new(vec![r1, r2]).unwrap();
 
             let primaries: Vec<_> = template.primary_recs().collect();
             assert_eq!(primaries.len(), 2);
@@ -297,7 +297,7 @@ mod tests {
         fn test_r1_only() {
             let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
 
-            let template = Template::build(vec![r1]).unwrap();
+            let template = Template::new(vec![r1]).unwrap();
 
             assert!(template.r1.is_some());
             assert!(template.r2.is_none());
@@ -308,7 +308,7 @@ mod tests {
         fn test_r2_only() {
             let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
 
-            let template = Template::build(vec![r2]).unwrap();
+            let template = Template::new(vec![r2]).unwrap();
 
             assert!(template.r1.is_none());
             assert!(template.r2.is_some());
@@ -324,7 +324,7 @@ mod tests {
             // Unpaired reads (no PAIRED flag) should go to r1
             let rec = make_record(b"fragment", 0);
 
-            let template = Template::build(vec![rec]).unwrap();
+            let template = Template::new(vec![rec]).unwrap();
 
             assert!(template.r1.is_some());
             assert!(template.r2.is_none());
@@ -335,7 +335,7 @@ mod tests {
         fn test_unpaired_read_iterators() {
             let rec = make_record(b"fragment", 0);
 
-            let template = Template::build(vec![rec]).unwrap();
+            let template = Template::new(vec![rec]).unwrap();
 
             assert_eq!(template.all_recs().count(), 1);
             assert_eq!(template.primary_recs().count(), 1);
@@ -350,7 +350,7 @@ mod tests {
             let primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let secondary = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
 
-            let template = Template::build(vec![primary, secondary]).unwrap();
+            let template = Template::new(vec![primary, secondary]).unwrap();
 
             assert!(template.r1.is_some());
             assert_eq!(template.r1_secondaries.len(), 1);
@@ -362,7 +362,7 @@ mod tests {
             let primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
             let secondary = make_record(b"read1", PAIRED | LAST_IN_PAIR | SECONDARY);
 
-            let template = Template::build(vec![primary, secondary]).unwrap();
+            let template = Template::new(vec![primary, secondary]).unwrap();
 
             assert!(template.r2.is_some());
             assert_eq!(template.r2_secondaries.len(), 1);
@@ -374,7 +374,7 @@ mod tests {
             let primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let supplementary = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
 
-            let template = Template::build(vec![primary, supplementary]).unwrap();
+            let template = Template::new(vec![primary, supplementary]).unwrap();
 
             assert!(template.r1.is_some());
             assert!(template.r1_secondaries.is_empty());
@@ -386,7 +386,7 @@ mod tests {
             let primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
             let supplementary = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
 
-            let template = Template::build(vec![primary, supplementary]).unwrap();
+            let template = Template::new(vec![primary, supplementary]).unwrap();
 
             assert!(template.r2.is_some());
             assert!(template.r2_secondaries.is_empty());
@@ -400,7 +400,7 @@ mod tests {
             let primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let both = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY | SUPPLEMENTARY);
 
-            let template = Template::build(vec![primary, both]).unwrap();
+            let template = Template::new(vec![primary, both]).unwrap();
 
             assert!(template.r1.is_some());
             assert_eq!(template.r1_secondaries.len(), 1);
@@ -418,7 +418,7 @@ mod tests {
             let r2_supp1 = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
             let r2_supp2 = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
 
-            let template = Template::build(vec![
+            let template = Template::new(vec![
                 r1_primary, r2_primary, r1_sec1, r1_sec2, r2_sec1, r1_supp1, r2_supp1, r2_supp2,
             ])
             .unwrap();
@@ -438,7 +438,7 @@ mod tests {
             let r1_sec = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
             let r2_supp = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
 
-            let template = Template::build(vec![r1_primary, r2_primary, r1_sec, r2_supp]).unwrap();
+            let template = Template::new(vec![r1_primary, r2_primary, r1_sec, r2_supp]).unwrap();
 
             assert_eq!(template.all_recs().count(), 4);
             assert_eq!(template.primary_recs().count(), 2);
@@ -453,7 +453,7 @@ mod tests {
             let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let r2 = make_record(b"read2", PAIRED | LAST_IN_PAIR);
 
-            let result = Template::build(vec![r1, r2]);
+            let result = Template::new(vec![r1, r2]);
 
             assert_eq!(
                 result.unwrap_err(),
@@ -469,7 +469,7 @@ mod tests {
             let r1a = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
             let r1b = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
 
-            let result = Template::build(vec![r1a, r1b]);
+            let result = Template::new(vec![r1a, r1b]);
 
             assert_eq!(
                 result.unwrap_err(),
@@ -482,7 +482,7 @@ mod tests {
             let r2a = make_record(b"read1", PAIRED | LAST_IN_PAIR);
             let r2b = make_record(b"read1", PAIRED | LAST_IN_PAIR);
 
-            let result = Template::build(vec![r2a, r2b]);
+            let result = Template::new(vec![r2a, r2b]);
 
             assert_eq!(
                 result.unwrap_err(),
@@ -496,7 +496,7 @@ mod tests {
             let r1 = make_record(b"read1", 0);
             let r2 = make_record(b"read1", 0);
 
-            let result = Template::build(vec![r1, r2]);
+            let result = Template::new(vec![r1, r2]);
 
             assert_eq!(
                 result.unwrap_err(),
@@ -510,7 +510,7 @@ mod tests {
 
         #[test]
         fn test_empty_template() {
-            let template = Template::build(vec![]).unwrap();
+            let template = Template::new(vec![]).unwrap();
 
             assert!(template.r1.is_none());
             assert!(template.r2.is_none());
@@ -528,7 +528,7 @@ mod tests {
             // Template with only secondary alignments (no primaries)
             let sec = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
 
-            let template = Template::build(vec![sec]).unwrap();
+            let template = Template::new(vec![sec]).unwrap();
 
             assert!(template.r1.is_none());
             assert_eq!(template.name(), Some(b"read1".as_slice()));
@@ -539,7 +539,7 @@ mod tests {
             // Template with only supplementary alignments (no primaries)
             let supp = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
 
-            let template = Template::build(vec![supp]).unwrap();
+            let template = Template::new(vec![supp]).unwrap();
 
             assert!(template.r1.is_none());
             assert_eq!(template.name(), Some(b"read1".as_slice()));
@@ -568,7 +568,7 @@ mod tests {
             let r2_supp = make_record(b"read1", PAIRED | LAST_IN_PAIR | SUPPLEMENTARY);
 
             let template =
-                Template::build(vec![r1_primary, r2_primary, r1_sec, r2_sec, r1_supp, r2_supp])
+                Template::new(vec![r1_primary, r2_primary, r1_sec, r2_sec, r1_supp, r2_supp])
                     .unwrap();
 
             let recs: Vec<_> = template.all_recs().collect();
