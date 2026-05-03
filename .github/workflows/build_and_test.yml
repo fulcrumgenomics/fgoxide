@@ -10,79 +10,59 @@ jobs:
     name: Check
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          profile: minimal
           toolchain: stable
-          override: false
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
-
-      - name: Run cargo check
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
-        with:
-          command: check
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+      - run: cargo check --all-targets
 
   lints:
     name: Lints
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          profile: minimal
           toolchain: stable
-          override: false
           components: rustfmt, clippy
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
-
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
       - name: Run cargo fmt
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
-        with:
-          command: fmt
-          args: --all -- --check
-
+        run: cargo fmt --all -- --check
       - name: Run cargo clippy
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
-        with:
-          command: clippy
-          args: -- -D warnings
-
-      - name: Run cargo clippy on tests
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1
-        with:
-          command: clippy
-          args: --tests -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macOS-latest]
+        os: [ubuntu-24.04, macos-15]
     steps:
-      - name: Checkout sources
-        uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
-          profile: minimal
           toolchain: stable
-          override: false
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+      - run: cargo test --verbose
 
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # v1
-
-      - name: Run tests
-        run: cargo test --verbose
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      # Read rust-version from Cargo.toml so the MSRV check stays in sync
+      # automatically when MSRV is bumped. RUSTUP_TOOLCHAIN overrides the
+      # channel pinned in rust-toolchain.toml so this job actually runs
+      # against the MSRV instead of stable.
+      - name: Read MSRV from Cargo.toml
+        run: |
+          MSRV=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ -z "$MSRV" ]]; then echo "Failed to parse rust-version" >&2; exit 1; fi
+          echo "MSRV=$MSRV" >> "$GITHUB_ENV"
+          echo "RUSTUP_TOOLCHAIN=$MSRV" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ env.MSRV }}
+      - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
+      - run: cargo check --all-targets

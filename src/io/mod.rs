@@ -51,10 +51,10 @@ use crate::{FgError, Result};
 use csv::{
     DeserializeRecordsIntoIter, QuoteStyle, ReaderBuilder, StringRecord, Writer, WriterBuilder,
 };
+use flate2::Compression;
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 /// The set of file extensions to treat as GZIPPED
 const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
