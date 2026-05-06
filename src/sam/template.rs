@@ -164,6 +164,9 @@ where
     FgError: From<E>,
 {
     inner: std::iter::Peekable<I>,
+    /// An error discovered while peeking the next group's first record. Held back so the
+    /// in-progress template is yielded first; surfaced on the following call to `next`.
+    pending_err: Option<FgError>,
 }
 
 impl<I, E> TemplateIterator<I, E>
@@ -173,15 +176,28 @@ where
 {
     /// Wraps an iterator of records, assumed to be queryname-grouped.
     pub fn new(inner: I) -> Self {
-        Self { inner: inner.peekable() }
+        Self { inner: inner.peekable(), pending_err: None }
     }
 
-    /// Returns a reference to the wrapped iterator's next record without consuming it.
+    /// Peeks the next record's query name. Returns `Some(Ok(name))` if the peek yielded a
+    /// named record, `Some(Err(_))` if the peeked record was an error or had no name (in
+    /// which case the offending record is also consumed so it is not seen twice), or `None`
+    /// if the underlying iterator is exhausted.
     fn peek_name(&mut self) -> Option<Result<Vec<u8>>> {
         match self.inner.peek()? {
-            Ok(rec) => Some(rec.name().map(|n| n.to_vec()).ok_or(FgError::MissingQueryName)),
-            // Cannot move the error out of the peeked Result; pop it on the next call to next().
-            Err(_) => None,
+            Ok(rec) => match rec.name() {
+                Some(n) => Some(Ok(n.to_vec())),
+                None => {
+                    // Drop the bad record so a later call doesn't see it again.
+                    let _ = self.inner.next();
+                    Some(Err(FgError::MissingQueryName))
+                }
+            },
+            // Cannot move the error out of the peeked Result; consume it now.
+            Err(_) => match self.inner.next() {
+                Some(Err(e)) => Some(Err(FgError::from(e))),
+                _ => unreachable!("peek returned Some(Err); next must yield the same Err"),
+            },
         }
     }
 }
@@ -194,6 +210,10 @@ where
     type Item = Result<Template>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(e) = self.pending_err.take() {
+            return Some(Err(e));
+        }
+
         // Pull the first record of the next template, surfacing any underlying error.
         let first = match self.inner.next()? {
             Ok(rec) => rec,
@@ -210,7 +230,8 @@ where
             return Some(Err(e));
         }
 
-        // Peek subsequent records; consume those that share the same query name.
+        // Peek subsequent records; consume those that share the same query name. Errors
+        // discovered during peek are buffered so the completed template is yielded first.
         loop {
             match self.peek_name() {
                 Some(Ok(next_name)) if next_name == name => {
@@ -224,14 +245,11 @@ where
                     }
                 }
                 Some(Ok(_)) => break,
-                Some(Err(e)) => return Some(Err(e)),
-                None => {
-                    // Either the stream is exhausted, or the next item is an error we deferred.
-                    if let Some(Err(e)) = self.inner.next() {
-                        return Some(Err(FgError::from(e)));
-                    }
+                Some(Err(e)) => {
+                    self.pending_err = Some(e);
                     break;
                 }
+                None => break,
             }
         }
 
@@ -414,11 +432,13 @@ mod tests {
 
     #[test]
     fn iterator_propagates_error_mid_template() {
-        // An error encountered partway through a queryname group surfaces as the next
-        // yielded item, abandoning the in-progress template.
+        // An error encountered partway through a queryname group surfaces *after* the
+        // in-progress template is yielded; iteration then resumes with the next group.
         let items: Vec<std::io::Result<RecordBuf>> =
             vec![Ok(r1_primary("q1")), Err(std::io::Error::other("boom")), Ok(r2_primary("q2"))];
         let mut it = TemplateIterator::new(items.into_iter());
+        let t = it.next().unwrap().unwrap();
+        assert_eq!(t.name, b"q1");
         let err = it.next().unwrap().unwrap_err();
         assert!(matches!(err, FgError::IoError(_)));
         let t = it.next().unwrap().unwrap();
