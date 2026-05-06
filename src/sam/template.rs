@@ -1,6 +1,15 @@
 //! [`Template`] and [`TemplateIterator`] for grouping alignment records by query name.
 //!
-//! Ports the equivalent abstractions from `fgbio` (Scala) and `fgpyo` (Python).
+//! Ports the equivalent abstractions from `fgbio` (Scala) and `fgpyo` (Python). The
+//! source material being ported, pinned to the upstream commits at the time this module
+//! was written:
+//!
+//! - fgbio `Template` (case class + companion object): `Bams.scala` lines 47-178 at
+//!   `fulcrumgenomics/fgbio@768d38c0`.
+//! - fgbio `templateIterator`: `ZipperBams.scala` line 109 at the same commit.
+//! - fgpyo `Template`: `fgpyo/sam/__init__.py` lines 1346-1563 at
+//!   `fulcrumgenomics/fgpyo@416f0f64`.
+//! - fgpyo `TemplateIterator`: `fgpyo/sam/__init__.py` lines 1564-1581 at the same commit.
 
 use noodles_sam::alignment::RecordBuf;
 use noodles_sam::alignment::record::Flags;
