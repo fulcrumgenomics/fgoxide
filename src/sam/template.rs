@@ -270,6 +270,34 @@ mod tests {
     use super::*;
     use noodles_sam::alignment::RecordBuf;
     use noodles_sam::alignment::record::Flags;
+    use rstest::rstest;
+
+    /// Identifies which of the seven `Template` slots a single record landed in.
+    #[derive(Debug, PartialEq)]
+    enum Slot {
+        R1Primary,
+        R2Primary,
+        R1Supp,
+        R2Supp,
+        R1Sec,
+        R2Sec,
+    }
+
+    fn slot_of(t: &Template) -> Slot {
+        if t.r1.is_some() {
+            Slot::R1Primary
+        } else if t.r2.is_some() {
+            Slot::R2Primary
+        } else if !t.r1_supplementary.is_empty() {
+            Slot::R1Supp
+        } else if !t.r2_supplementary.is_empty() {
+            Slot::R2Supp
+        } else if !t.r1_secondary.is_empty() {
+            Slot::R1Sec
+        } else {
+            Slot::R2Sec
+        }
+    }
 
     /// Builds a record with the given query name and flags. Other fields are left default.
     fn rec(name: &str, flags: Flags) -> RecordBuf {
@@ -333,22 +361,61 @@ mod tests {
         assert_eq!(t.len(), 6);
     }
 
-    #[test]
-    fn unpaired_record_classifies_as_r1() {
-        let t = Template::from_records(vec![rec("q1", Flags::empty())]).unwrap();
-        assert!(t.r1.is_some());
-        assert!(t.r2.is_none());
+    /// Single-record classification across the flag-bit space.  Pins fgbio's behavior:
+    /// secondary wins over supplementary, unpaired and unknown-segment records are not
+    /// rejected, and `SEGMENTED` without `FIRST_SEGMENT` or `LAST_SEGMENT` falls through
+    /// to the R2 slot per the `!paired || firstOfPair` rule.
+    #[rstest]
+    #[case::unpaired(Flags::empty(), Slot::R1Primary)]
+    #[case::unpaired_secondary(Flags::SECONDARY, Slot::R1Sec)]
+    #[case::unpaired_supplementary(Flags::SUPPLEMENTARY, Slot::R1Supp)]
+    #[case::r1_primary(Flags::SEGMENTED | Flags::FIRST_SEGMENT, Slot::R1Primary)]
+    #[case::r2_primary(Flags::SEGMENTED | Flags::LAST_SEGMENT, Slot::R2Primary)]
+    #[case::r1_supplementary(
+        Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::SUPPLEMENTARY, Slot::R1Supp,
+    )]
+    #[case::r2_supplementary(
+        Flags::SEGMENTED | Flags::LAST_SEGMENT | Flags::SUPPLEMENTARY, Slot::R2Supp,
+    )]
+    #[case::r1_secondary(
+        Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::SECONDARY, Slot::R1Sec,
+    )]
+    #[case::r2_secondary(
+        Flags::SEGMENTED | Flags::LAST_SEGMENT | Flags::SECONDARY, Slot::R2Sec,
+    )]
+    #[case::r1_secondary_supplementary(
+        Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::SECONDARY | Flags::SUPPLEMENTARY,
+        Slot::R1Sec,
+    )]
+    #[case::r2_secondary_supplementary(
+        Flags::SEGMENTED | Flags::LAST_SEGMENT | Flags::SECONDARY | Flags::SUPPLEMENTARY,
+        Slot::R2Sec,
+    )]
+    #[case::unknown_segment(Flags::SEGMENTED, Slot::R2Primary)]
+    fn classifies_into_correct_slot(#[case] flags: Flags, #[case] expected: Slot) {
+        let t = Template::from_records(vec![rec("q1", flags)]).unwrap();
+        assert_eq!(slot_of(&t), expected);
     }
 
     #[test]
-    fn secondary_supplementary_goes_to_secondary() {
-        // Per fgbio, a record marked as both secondary and supplementary is classified as
-        // secondary (the secondary check happens first).
-        let flags =
-            Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::SECONDARY | Flags::SUPPLEMENTARY;
-        let t = Template::from_records(vec![r1_primary("q1"), rec("q1", flags)]).unwrap();
-        assert_eq!(t.r1_secondary.len(), 1);
-        assert!(t.r1_supplementary.is_empty());
+    fn supplementary_only_template_is_allowed() {
+        // No primary in either slot; fgbio allows this and so do we.
+        let t =
+            Template::from_records(vec![r1_supplementary("q1"), r2_supplementary("q1")]).unwrap();
+        assert_eq!(t.r1_supplementary.len(), 1);
+        assert_eq!(t.r2_supplementary.len(), 1);
+        assert!(t.r1.is_none() && t.r2.is_none());
+    }
+
+    #[rstest]
+    #[case::r1(WhichRead::R1, vec![r1_primary("q1"), r1_primary("q1")])]
+    #[case::r2(WhichRead::R2, vec![r2_primary("q1"), r2_primary("q1")])]
+    fn multiple_primaries_per_end_errors(
+        #[case] expected: WhichRead,
+        #[case] records: Vec<RecordBuf>,
+    ) {
+        let err = Template::from_records(records).unwrap_err();
+        assert!(matches!(err, FgError::MultiplePrimaryAlignments { read, .. } if read == expected));
     }
 
     #[test]
@@ -361,42 +428,6 @@ mod tests {
     fn inconsistent_names_error() {
         let err = Template::from_records(vec![r1_primary("q1"), r2_primary("q2")]).unwrap_err();
         assert!(matches!(err, FgError::InconsistentTemplateNames { .. }));
-    }
-
-    #[test]
-    fn multiple_primaries_error() {
-        let err = Template::from_records(vec![r1_primary("q1"), r1_primary("q1")]).unwrap_err();
-        assert!(matches!(err, FgError::MultiplePrimaryAlignments { read: WhichRead::R1, .. }));
-    }
-
-    #[test]
-    fn multiple_r2_primaries_error() {
-        let err = Template::from_records(vec![r2_primary("q1"), r2_primary("q1")]).unwrap_err();
-        assert!(matches!(err, FgError::MultiplePrimaryAlignments { read: WhichRead::R2, .. }));
-    }
-
-    #[test]
-    fn supplementary_only_template_is_allowed() {
-        // No primary in either slot; the template is just supplementaries. fgbio allows
-        // this and so do we.
-        let t =
-            Template::from_records(vec![r1_supplementary("q1"), r2_supplementary("q1")]).unwrap();
-        assert!(t.r1.is_none());
-        assert!(t.r2.is_none());
-        assert_eq!(t.r1_supplementary.len(), 1);
-        assert_eq!(t.r2_supplementary.len(), 1);
-        assert_eq!(t.len(), 2);
-    }
-
-    #[test]
-    fn segmented_without_first_or_last_classifies_as_r2() {
-        // Per the SAM spec a SEGMENTED record without FIRST_SEGMENT or LAST_SEGMENT is an
-        // "unknown segment". We follow fgbio's `!paired || firstOfPair` check, which puts
-        // such records in the R2 slot. This test pins that behavior.
-        let unknown = rec("q1", Flags::SEGMENTED);
-        let t = Template::from_records(vec![unknown]).unwrap();
-        assert!(t.r1.is_none());
-        assert!(t.r2.is_some());
     }
 
     #[test]
@@ -447,54 +478,33 @@ mod tests {
         assert_eq!(t.name, b"q1");
     }
 
-    #[test]
-    fn iterator_propagates_error_mid_template() {
-        // An error encountered partway through a queryname group surfaces *after* the
-        // in-progress template is yielded; iteration then resumes with the next group.
+    /// A peek-time error must surface *after* any in-progress template is yielded, and
+    /// the iterator must then resume with the next group.  Originally bug #1 dropped the
+    /// in-progress template on the floor; this also covers the missing-name variant of
+    /// the same bug class.
+    #[rstest]
+    #[case::io_error(
+        Err(std::io::Error::other("boom")),
+        FgError::IoError(std::io::Error::other("boom"))
+    )]
+    #[case::missing_name(
+        Ok(RecordBuf::builder().set_flags(Flags::SEGMENTED | Flags::FIRST_SEGMENT).build()),
+        FgError::MissingQueryName,
+    )]
+    fn iterator_yields_completed_template_before_peek_time_error(
+        #[case] bad: std::io::Result<RecordBuf>,
+        #[case] expected_err: FgError,
+    ) {
         let items: Vec<std::io::Result<RecordBuf>> =
-            vec![Ok(r1_primary("q1")), Err(std::io::Error::other("boom")), Ok(r2_primary("q2"))];
+            vec![Ok(r1_primary("q1")), Ok(r2_primary("q1")), bad, Ok(r1_primary("q2"))];
         let mut it = TemplateIterator::new(items.into_iter());
-        let t = it.next().unwrap().unwrap();
-        assert_eq!(t.name, b"q1");
-        let err = it.next().unwrap().unwrap_err();
-        assert!(matches!(err, FgError::IoError(_)));
-        let t = it.next().unwrap().unwrap();
-        assert_eq!(t.name, b"q2");
-    }
-
-    // Regression: when an underlying error follows a fully accumulated template, the
-    // completed template must be yielded before the error surfaces.  Currently fails:
-    // peek_name returns None for a peeked Err, the loop's None arm consumes the error
-    // immediately, and the in-progress template is dropped on the floor.
-    #[test]
-    fn iterator_yields_completed_template_before_error() {
-        let items: Vec<std::io::Result<RecordBuf>> = vec![
-            Ok(r1_primary("q1")),
-            Ok(r2_primary("q1")),
-            Err(std::io::Error::other("boom")),
-        ];
-        let mut it = TemplateIterator::new(items.into_iter());
-        let t = it.next().unwrap().expect("template q1 should be yielded before the error");
+        let t = it.next().unwrap().expect("template q1 yields before the error");
         assert_eq!(t.name, b"q1");
         assert_eq!(t.len(), 2);
         let err = it.next().unwrap().unwrap_err();
-        assert!(matches!(err, FgError::IoError(_)));
-    }
-
-    // Regression: a nameless record encountered after a fully accumulated template should
-    // surface as MissingQueryName *after* the template is yielded, not in place of it.
-    // Currently fails for the same reason as above.
-    #[test]
-    fn iterator_yields_completed_template_before_missing_name_error() {
-        let no_name =
-            RecordBuf::builder().set_flags(Flags::SEGMENTED | Flags::FIRST_SEGMENT).build();
-        let items: Vec<std::io::Result<RecordBuf>> =
-            vec![Ok(r1_primary("q1")), Ok(r2_primary("q1")), Ok(no_name)];
-        let mut it = TemplateIterator::new(items.into_iter());
-        let t = it.next().unwrap().expect("template q1 should be yielded before the error");
-        assert_eq!(t.name, b"q1");
-        let err = it.next().unwrap().unwrap_err();
-        assert!(matches!(err, FgError::MissingQueryName));
+        assert_eq!(std::mem::discriminant(&err), std::mem::discriminant(&expected_err));
+        let t = it.next().unwrap().unwrap();
+        assert_eq!(t.name, b"q2");
     }
 
     #[test]
