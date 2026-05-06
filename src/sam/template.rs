@@ -13,7 +13,7 @@
 
 use std::io;
 
-use bstr::BString;
+use bstr::{BString, ByteSlice};
 use noodles_sam::alignment::RecordBuf;
 use noodles_sam::alignment::record::Flags;
 
@@ -59,14 +59,14 @@ impl Template {
         let mut have_name = false;
 
         for rec in records {
-            let rec_name: BString = rec.name().ok_or(FgError::MissingQueryName)?.into();
+            let rec_name = rec.name().ok_or(FgError::MissingQueryName)?;
             if !have_name {
-                t.name = rec_name;
+                t.name = rec_name.into();
                 have_name = true;
-            } else if t.name != rec_name {
+            } else if rec_name != t.name.as_bstr() {
                 return Err(FgError::InconsistentTemplateNames {
                     first: t.name.clone(),
-                    second: rec_name,
+                    second: rec_name.into(),
                 });
             }
 
@@ -180,27 +180,34 @@ where
         Self { inner: inner.peekable(), pending_err: None }
     }
 
-    /// Peeks the next record's query name. Returns `Some(Ok(name))` if the peek yielded a
-    /// named record, `Some(Err(_))` if the peeked record was an error or had no name (in
-    /// which case the offending record is also consumed so it is not seen twice), or `None`
-    /// if the underlying iterator is exhausted.
-    fn peek_name(&mut self) -> Option<Result<BString>> {
+    /// Classifies the next item without allocating: does it belong to the current group,
+    /// start a new one, or surface an error?  Records that the caller can't recover from
+    /// (no name, or an underlying error) are consumed here so a later call doesn't see them
+    /// again.
+    fn peek_outcome(&mut self, current_name: &BString) -> Option<PeekOutcome> {
         match self.inner.peek()? {
             Ok(rec) => match rec.name() {
-                Some(n) => Some(Ok(n.into())),
+                Some(n) if n == current_name.as_bstr() => Some(PeekOutcome::SameName),
+                Some(_) => Some(PeekOutcome::DifferentName),
                 None => {
-                    // Drop the bad record so a later call doesn't see it again.
                     let _ = self.inner.next();
-                    Some(Err(FgError::MissingQueryName))
+                    Some(PeekOutcome::MissingName)
                 }
             },
-            // Cannot move the error out of the peeked Result; consume it now.
             Err(_) => match self.inner.next() {
-                Some(Err(e)) => Some(Err(e.into())),
+                Some(Err(e)) => Some(PeekOutcome::Err(e.into())),
                 _ => unreachable!("peek returned Some(Err); next must yield the same Err"),
             },
         }
     }
+}
+
+/// Outcome of peeking the next record relative to the in-progress template's name.
+enum PeekOutcome {
+    SameName,
+    DifferentName,
+    MissingName,
+    Err(FgError),
 }
 
 impl<I> Iterator for TemplateIterator<I>
@@ -226,7 +233,7 @@ where
         };
 
         let mut template = Template {
-            name: name.clone(),
+            name,
             r1: None,
             r2: None,
             r1_supplementary: Vec::new(),
@@ -241,8 +248,8 @@ where
         // Peek subsequent records; consume those that share the same query name. Errors
         // discovered during peek are buffered so the completed template is yielded first.
         loop {
-            match self.peek_name() {
-                Some(Ok(next_name)) if next_name == name => {
+            match self.peek_outcome(&template.name) {
+                Some(PeekOutcome::SameName) => {
                     // Safe to unwrap: peek returned Some(Ok), so next() yields Some(Ok).
                     let rec = match self.inner.next().unwrap() {
                         Ok(rec) => rec,
@@ -252,8 +259,12 @@ where
                         return Some(Err(e));
                     }
                 }
-                Some(Ok(_)) => break,
-                Some(Err(e)) => {
+                Some(PeekOutcome::DifferentName) => break,
+                Some(PeekOutcome::MissingName) => {
+                    self.pending_err = Some(FgError::MissingQueryName);
+                    break;
+                }
+                Some(PeekOutcome::Err(e)) => {
                     self.pending_err = Some(e);
                     break;
                 }
