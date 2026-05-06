@@ -166,9 +166,6 @@ where
     I: Iterator<Item = io::Result<RecordBuf>>,
 {
     inner: std::iter::Peekable<I>,
-    /// An error discovered while peeking the next group's first record. Held back so the
-    /// in-progress template is yielded first; surfaced on the following call to `next`.
-    pending_err: Option<FgError>,
 }
 
 impl<I> TemplateIterator<I>
@@ -177,37 +174,8 @@ where
 {
     /// Wraps an iterator of records, assumed to be queryname-grouped.
     pub fn new(inner: I) -> Self {
-        Self { inner: inner.peekable(), pending_err: None }
+        Self { inner: inner.peekable() }
     }
-
-    /// Classifies the next item without allocating: does it belong to the current group,
-    /// start a new one, or surface an error?  Records that the caller can't recover from
-    /// (no name, or an underlying error) are consumed here so a later call doesn't see them
-    /// again.
-    fn peek_outcome(&mut self, current_name: &BString) -> Option<PeekOutcome> {
-        match self.inner.peek()? {
-            Ok(rec) => match rec.name() {
-                Some(n) if n == current_name.as_bstr() => Some(PeekOutcome::SameName),
-                Some(_) => Some(PeekOutcome::DifferentName),
-                None => {
-                    let _ = self.inner.next();
-                    Some(PeekOutcome::MissingName)
-                }
-            },
-            Err(_) => match self.inner.next() {
-                Some(Err(e)) => Some(PeekOutcome::Err(e.into())),
-                _ => unreachable!("peek returned Some(Err); next must yield the same Err"),
-            },
-        }
-    }
-}
-
-/// Outcome of peeking the next record relative to the in-progress template's name.
-enum PeekOutcome {
-    SameName,
-    DifferentName,
-    MissingName,
-    Err(FgError),
 }
 
 impl<I> Iterator for TemplateIterator<I>
@@ -217,11 +185,8 @@ where
     type Item = Result<Template>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(e) = self.pending_err.take() {
-            return Some(Err(e));
-        }
-
-        // Pull the first record of the next template, surfacing any underlying error.
+        // Pull the first record of the next template, surfacing any underlying error
+        // or missing-name error directly.
         let first = match self.inner.next()? {
             Ok(rec) => rec,
             Err(e) => return Some(Err(e.into())),
@@ -245,30 +210,22 @@ where
             return Some(Err(e));
         }
 
-        // Peek subsequent records; consume those that share the same query name. Errors
-        // discovered during peek are buffered so the completed template is yielded first.
-        loop {
-            match self.peek_outcome(&template.name) {
-                Some(PeekOutcome::SameName) => {
-                    // Safe to unwrap: peek returned Some(Ok), so next() yields Some(Ok).
-                    let rec = match self.inner.next().unwrap() {
-                        Ok(rec) => rec,
-                        Err(e) => return Some(Err(e.into())),
+        // Consume records that share the same query name. Any peek-time anomaly
+        // (different name, missing name, underlying Err) is treated as a group
+        // boundary; the next call to `next` will encounter it via the front-of-loop
+        // logic above and surface it as its own item.
+        while let Some(Ok(rec)) = self.inner.peek() {
+            match rec.name() {
+                Some(n) if n == template.name.as_bstr() => {
+                    let rec = match self.inner.next() {
+                        Some(Ok(rec)) => rec,
+                        _ => unreachable!("peek returned Some(Ok); next must yield the same"),
                     };
                     if let Err(e) = template.add_record(rec) {
                         return Some(Err(e));
                     }
                 }
-                Some(PeekOutcome::DifferentName) => break,
-                Some(PeekOutcome::MissingName) => {
-                    self.pending_err = Some(FgError::MissingQueryName);
-                    break;
-                }
-                Some(PeekOutcome::Err(e)) => {
-                    self.pending_err = Some(e);
-                    break;
-                }
-                None => break,
+                _ => break,
             }
         }
 
