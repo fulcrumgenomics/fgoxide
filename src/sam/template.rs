@@ -17,7 +17,7 @@ use bstr::BString;
 use noodles_sam::alignment::RecordBuf;
 use noodles_sam::alignment::record::Flags;
 
-use crate::{FgError, Result};
+use crate::{FgError, Result, WhichRead};
 
 /// All alignment records that share a query name (i.e. belong to the same template).
 ///
@@ -134,7 +134,7 @@ impl Template {
             if self.r1.is_some() {
                 return Err(FgError::MultiplePrimaryAlignments {
                     name: self.name.clone(),
-                    read: "R1",
+                    read: WhichRead::R1,
                 });
             }
             self.r1 = Some(rec);
@@ -142,7 +142,7 @@ impl Template {
             if self.r2.is_some() {
                 return Err(FgError::MultiplePrimaryAlignments {
                     name: self.name.clone(),
-                    read: "R2",
+                    read: WhichRead::R2,
                 });
             }
             self.r2 = Some(rec);
@@ -225,7 +225,15 @@ where
             None => return Some(Err(FgError::MissingQueryName)),
         };
 
-        let mut template = Template { name: name.clone(), ..Template::default() };
+        let mut template = Template {
+            name: name.clone(),
+            r1: None,
+            r2: None,
+            r1_supplementary: Vec::new(),
+            r2_supplementary: Vec::new(),
+            r1_secondary: Vec::new(),
+            r2_secondary: Vec::new(),
+        };
         if let Err(e) = template.add_record(first) {
             return Some(Err(e));
         }
@@ -358,7 +366,7 @@ mod tests {
     #[test]
     fn multiple_primaries_error() {
         let err = Template::from_records(vec![r1_primary("q1"), r1_primary("q1")]).unwrap_err();
-        assert!(matches!(err, FgError::MultiplePrimaryAlignments { read: "R1", .. }));
+        assert!(matches!(err, FgError::MultiplePrimaryAlignments { read: WhichRead::R1, .. }));
     }
 
     #[test]

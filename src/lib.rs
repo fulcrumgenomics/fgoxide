@@ -28,7 +28,7 @@ pub enum FgError {
 
     #[cfg(feature = "sam")]
     #[error("Multiple non-secondary, non-supplementary {read} records for template {name}.")]
-    MultiplePrimaryAlignments { name: bstr::BString, read: &'static str },
+    MultiplePrimaryAlignments { name: bstr::BString, read: WhichRead },
 
     #[cfg(feature = "sam")]
     #[error("Cannot construct a Template with no records.")]
@@ -41,3 +41,21 @@ pub enum FgError {
 
 /// Result type that should be used everywhere
 type Result<A> = std::result::Result<A, FgError>;
+
+/// Identifies which end of a paired-read template a record belongs to.
+#[cfg(feature = "sam")]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WhichRead {
+    R1,
+    R2,
+}
+
+#[cfg(feature = "sam")]
+impl std::fmt::Display for WhichRead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WhichRead::R1 => f.write_str("R1"),
+            WhichRead::R2 => f.write_str("R2"),
+        }
+    }
+}
