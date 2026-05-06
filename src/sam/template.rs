@@ -11,6 +11,8 @@
 //!   `fulcrumgenomics/fgpyo@416f0f64`.
 //! - fgpyo `TemplateIterator`: `fgpyo/sam/__init__.py` lines 1564-1581 at the same commit.
 
+use std::io;
+
 use noodles_sam::alignment::RecordBuf;
 use noodles_sam::alignment::record::Flags;
 
@@ -156,12 +158,11 @@ impl Template {
 /// after an intervening different name; mis-grouped input will silently produce multiple
 /// [`Template`]s for the same name.
 ///
-/// The adapter wraps any iterator yielding `Result<RecordBuf, E>` where `E` is convertible to
-/// [`FgError`], so it can be layered directly on top of a `noodles` reader iterator.
-pub struct TemplateIterator<I, E>
+/// The adapter wraps any iterator yielding [`io::Result<RecordBuf>`], matching what `noodles`
+/// readers produce.
+pub struct TemplateIterator<I>
 where
-    I: Iterator<Item = std::result::Result<RecordBuf, E>>,
-    FgError: From<E>,
+    I: Iterator<Item = io::Result<RecordBuf>>,
 {
     inner: std::iter::Peekable<I>,
     /// An error discovered while peeking the next group's first record. Held back so the
@@ -169,10 +170,9 @@ where
     pending_err: Option<FgError>,
 }
 
-impl<I, E> TemplateIterator<I, E>
+impl<I> TemplateIterator<I>
 where
-    I: Iterator<Item = std::result::Result<RecordBuf, E>>,
-    FgError: From<E>,
+    I: Iterator<Item = io::Result<RecordBuf>>,
 {
     /// Wraps an iterator of records, assumed to be queryname-grouped.
     pub fn new(inner: I) -> Self {
@@ -195,17 +195,16 @@ where
             },
             // Cannot move the error out of the peeked Result; consume it now.
             Err(_) => match self.inner.next() {
-                Some(Err(e)) => Some(Err(FgError::from(e))),
+                Some(Err(e)) => Some(Err(e.into())),
                 _ => unreachable!("peek returned Some(Err); next must yield the same Err"),
             },
         }
     }
 }
 
-impl<I, E> Iterator for TemplateIterator<I, E>
+impl<I> Iterator for TemplateIterator<I>
 where
-    I: Iterator<Item = std::result::Result<RecordBuf, E>>,
-    FgError: From<E>,
+    I: Iterator<Item = io::Result<RecordBuf>>,
 {
     type Item = Result<Template>;
 
@@ -217,7 +216,7 @@ where
         // Pull the first record of the next template, surfacing any underlying error.
         let first = match self.inner.next()? {
             Ok(rec) => rec,
-            Err(e) => return Some(Err(FgError::from(e))),
+            Err(e) => return Some(Err(e.into())),
         };
 
         let name = match first.name() {
@@ -238,7 +237,7 @@ where
                     // Safe to unwrap: peek returned Some(Ok), so next() yields Some(Ok).
                     let rec = match self.inner.next().unwrap() {
                         Ok(rec) => rec,
-                        Err(e) => return Some(Err(FgError::from(e))),
+                        Err(e) => return Some(Err(e.into())),
                     };
                     if let Err(e) = template.add_record(rec) {
                         return Some(Err(e));
@@ -254,27 +253,6 @@ where
         }
 
         Some(Ok(template))
-    }
-}
-
-/// Convenience adapter trait, mirroring `IntoChunkedReadAheadIterator` in style.
-pub trait IntoTemplateIterator<E>: Sized
-where
-    FgError: From<E>,
-{
-    /// Wraps an iterator of records into a [`TemplateIterator`].
-    fn into_templates(self) -> TemplateIterator<Self, E>
-    where
-        Self: Iterator<Item = std::result::Result<RecordBuf, E>>;
-}
-
-impl<I, E> IntoTemplateIterator<E> for I
-where
-    I: Iterator<Item = std::result::Result<RecordBuf, E>>,
-    FgError: From<E>,
-{
-    fn into_templates(self) -> TemplateIterator<Self, E> {
-        TemplateIterator::new(self)
     }
 }
 
@@ -401,7 +379,7 @@ mod tests {
             r1_primary("q3"),
         ];
         let templates: Vec<Template> =
-            ok_iter(records).into_templates().collect::<Result<Vec<_>>>().unwrap();
+            TemplateIterator::new(ok_iter(records)).collect::<Result<Vec<_>>>().unwrap();
         assert_eq!(templates.len(), 3);
         assert_eq!(templates[0].name, b"q1");
         assert_eq!(templates[0].len(), 2);
@@ -414,7 +392,7 @@ mod tests {
     #[test]
     fn iterator_on_empty_input_yields_nothing() {
         let templates: Vec<Template> =
-            ok_iter(vec![]).into_templates().collect::<Result<Vec<_>>>().unwrap();
+            TemplateIterator::new(ok_iter(vec![])).collect::<Result<Vec<_>>>().unwrap();
         assert!(templates.is_empty());
     }
 
@@ -486,7 +464,7 @@ mod tests {
         // separate Template. This documents (rather than enforces) the assumption.
         let records = vec![r1_primary("q1"), r1_primary("q2"), r1_primary("q1")];
         let templates: Vec<Template> =
-            ok_iter(records).into_templates().collect::<Result<Vec<_>>>().unwrap();
+            TemplateIterator::new(ok_iter(records)).collect::<Result<Vec<_>>>().unwrap();
         assert_eq!(templates.len(), 3);
     }
 }
