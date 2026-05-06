@@ -5,6 +5,7 @@
 
 pub mod io;
 pub mod iter;
+#[cfg(feature = "sam")]
 pub mod sam;
 
 use thiserror::Error;
@@ -21,15 +22,19 @@ pub enum FgError {
     #[error("Error parsing delimited data file header.")]
     DelimFileHeaderError { expected: String, found: String },
 
+    #[cfg(feature = "sam")]
     #[error("Records for the same template have different query names: {first} vs {second}.")]
     InconsistentTemplateNames { first: bstr::BString, second: bstr::BString },
 
+    #[cfg(feature = "sam")]
     #[error("Multiple non-secondary, non-supplementary {read} records for template {name}.")]
     MultiplePrimaryAlignments { name: bstr::BString, read: &'static str },
 
+    #[cfg(feature = "sam")]
     #[error("Cannot construct a Template with no records.")]
     EmptyTemplate,
 
+    #[cfg(feature = "sam")]
     #[error("Alignment record is missing a query name.")]
     MissingQueryName,
 }

@@ -27,10 +27,14 @@ serde = { version = "^1.0.123", features = ["derive"] }
 serde-aux = "^4"
 
 # For SAM/BAM alignment record types used by the `sam` module.
-noodles-sam = "^0.84"
+noodles-sam = { version = "^0.84", optional = true }
 
 # Byte-string types matching what noodles surfaces for read names.
-bstr = "^1"
+bstr = { version = "^1", optional = true }
+
+[features]
+default = ["sam"]
+sam = ["dep:noodles-sam", "dep:bstr"]
 
 [dev-dependencies]
 tempfile = "^3"
