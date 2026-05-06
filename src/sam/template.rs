@@ -370,6 +370,36 @@ mod tests {
     }
 
     #[test]
+    fn multiple_r2_primaries_error() {
+        let err = Template::from_records(vec![r2_primary("q1"), r2_primary("q1")]).unwrap_err();
+        assert!(matches!(err, FgError::MultiplePrimaryAlignments { read: WhichRead::R2, .. }));
+    }
+
+    #[test]
+    fn supplementary_only_template_is_allowed() {
+        // No primary in either slot; the template is just supplementaries. fgbio allows
+        // this and so do we.
+        let t =
+            Template::from_records(vec![r1_supplementary("q1"), r2_supplementary("q1")]).unwrap();
+        assert!(t.r1.is_none());
+        assert!(t.r2.is_none());
+        assert_eq!(t.r1_supplementary.len(), 1);
+        assert_eq!(t.r2_supplementary.len(), 1);
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn segmented_without_first_or_last_classifies_as_r2() {
+        // Per the SAM spec a SEGMENTED record without FIRST_SEGMENT or LAST_SEGMENT is an
+        // "unknown segment". We follow fgbio's `!paired || firstOfPair` check, which puts
+        // such records in the R2 slot. This test pins that behavior.
+        let unknown = rec("q1", Flags::SEGMENTED);
+        let t = Template::from_records(vec![unknown]).unwrap();
+        assert!(t.r1.is_none());
+        assert!(t.r2.is_some());
+    }
+
+    #[test]
     fn missing_name_errors() {
         let no_name =
             RecordBuf::builder().set_flags(Flags::SEGMENTED | Flags::FIRST_SEGMENT).build();
