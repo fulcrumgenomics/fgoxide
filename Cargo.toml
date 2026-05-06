@@ -26,6 +26,9 @@ csv = "^1"
 serde = { version = "^1.0.123", features = ["derive"] }
 serde-aux = "^4"
 
+# For SAM/BAM alignment record types used by the `sam` module.
+noodles-sam = "^0.84"
+
 [dev-dependencies]
 tempfile = "^3"
 rstest = "^0.26"
