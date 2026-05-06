@@ -13,6 +13,7 @@
 
 use std::io;
 
+use bstr::BString;
 use noodles_sam::alignment::RecordBuf;
 use noodles_sam::alignment::record::Flags;
 
@@ -29,7 +30,7 @@ use crate::{FgError, Result};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Template {
     /// The query name shared by all records in this template.
-    pub name: Vec<u8>,
+    pub name: BString,
     /// The primary R1 alignment, if present.
     pub r1: Option<RecordBuf>,
     /// The primary R2 alignment, if present.
@@ -58,14 +59,14 @@ impl Template {
         let mut have_name = false;
 
         for rec in records {
-            let rec_name = rec.name().ok_or(FgError::MissingQueryName)?.to_vec();
+            let rec_name: BString = rec.name().ok_or(FgError::MissingQueryName)?.into();
             if !have_name {
                 t.name = rec_name;
                 have_name = true;
             } else if t.name != rec_name {
                 return Err(FgError::InconsistentTemplateNames {
-                    first: String::from_utf8_lossy(&t.name).into_owned(),
-                    second: String::from_utf8_lossy(&rec_name).into_owned(),
+                    first: t.name.clone(),
+                    second: rec_name,
                 });
             }
 
@@ -132,7 +133,7 @@ impl Template {
         } else if is_r1 {
             if self.r1.is_some() {
                 return Err(FgError::MultiplePrimaryAlignments {
-                    name: String::from_utf8_lossy(&self.name).into_owned(),
+                    name: self.name.clone(),
                     read: "R1",
                 });
             }
@@ -140,7 +141,7 @@ impl Template {
         } else {
             if self.r2.is_some() {
                 return Err(FgError::MultiplePrimaryAlignments {
-                    name: String::from_utf8_lossy(&self.name).into_owned(),
+                    name: self.name.clone(),
                     read: "R2",
                 });
             }
@@ -183,10 +184,10 @@ where
     /// named record, `Some(Err(_))` if the peeked record was an error or had no name (in
     /// which case the offending record is also consumed so it is not seen twice), or `None`
     /// if the underlying iterator is exhausted.
-    fn peek_name(&mut self) -> Option<Result<Vec<u8>>> {
+    fn peek_name(&mut self) -> Option<Result<BString>> {
         match self.inner.peek()? {
             Ok(rec) => match rec.name() {
-                Some(n) => Some(Ok(n.to_vec())),
+                Some(n) => Some(Ok(n.into())),
                 None => {
                     // Drop the bad record so a later call doesn't see it again.
                     let _ = self.inner.next();
@@ -219,8 +220,8 @@ where
             Err(e) => return Some(Err(e.into())),
         };
 
-        let name = match first.name() {
-            Some(n) => n.to_vec(),
+        let name: BString = match first.name() {
+            Some(n) => n.into(),
             None => return Some(Err(FgError::MissingQueryName)),
         };
 

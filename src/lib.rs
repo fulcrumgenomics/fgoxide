@@ -22,10 +22,10 @@ pub enum FgError {
     DelimFileHeaderError { expected: String, found: String },
 
     #[error("Records for the same template have different query names: {first} vs {second}.")]
-    InconsistentTemplateNames { first: String, second: String },
+    InconsistentTemplateNames { first: bstr::BString, second: bstr::BString },
 
     #[error("Multiple non-secondary, non-supplementary {read} records for template {name}.")]
-    MultiplePrimaryAlignments { name: String, read: &'static str },
+    MultiplePrimaryAlignments { name: bstr::BString, read: &'static str },
 
     #[error("Cannot construct a Template with no records.")]
     EmptyTemplate,

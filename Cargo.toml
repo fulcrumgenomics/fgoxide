@@ -29,6 +29,9 @@ serde-aux = "^4"
 # For SAM/BAM alignment record types used by the `sam` module.
 noodles-sam = "^0.84"
 
+# Byte-string types matching what noodles surfaces for read names.
+bstr = "^1"
+
 [dev-dependencies]
 tempfile = "^3"
 rstest = "^0.26"
