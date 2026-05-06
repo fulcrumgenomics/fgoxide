@@ -425,6 +425,41 @@ mod tests {
         assert_eq!(t.name, b"q2");
     }
 
+    // Regression: when an underlying error follows a fully accumulated template, the
+    // completed template must be yielded before the error surfaces.  Currently fails:
+    // peek_name returns None for a peeked Err, the loop's None arm consumes the error
+    // immediately, and the in-progress template is dropped on the floor.
+    #[test]
+    fn iterator_yields_completed_template_before_error() {
+        let items: Vec<std::io::Result<RecordBuf>> = vec![
+            Ok(r1_primary("q1")),
+            Ok(r2_primary("q1")),
+            Err(std::io::Error::other("boom")),
+        ];
+        let mut it = TemplateIterator::new(items.into_iter());
+        let t = it.next().unwrap().expect("template q1 should be yielded before the error");
+        assert_eq!(t.name, b"q1");
+        assert_eq!(t.len(), 2);
+        let err = it.next().unwrap().unwrap_err();
+        assert!(matches!(err, FgError::IoError(_)));
+    }
+
+    // Regression: a nameless record encountered after a fully accumulated template should
+    // surface as MissingQueryName *after* the template is yielded, not in place of it.
+    // Currently fails for the same reason as above.
+    #[test]
+    fn iterator_yields_completed_template_before_missing_name_error() {
+        let no_name =
+            RecordBuf::builder().set_flags(Flags::SEGMENTED | Flags::FIRST_SEGMENT).build();
+        let items: Vec<std::io::Result<RecordBuf>> =
+            vec![Ok(r1_primary("q1")), Ok(r2_primary("q1")), Ok(no_name)];
+        let mut it = TemplateIterator::new(items.into_iter());
+        let t = it.next().unwrap().expect("template q1 should be yielded before the error");
+        assert_eq!(t.name, b"q1");
+        let err = it.next().unwrap().unwrap_err();
+        assert!(matches!(err, FgError::MissingQueryName));
+    }
+
     #[test]
     fn iterator_does_not_collapse_repeated_names_across_groups() {
         // If the input is mis-grouped, each contiguous run with the same name becomes a
