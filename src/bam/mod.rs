@@ -1,8 +1,9 @@
 //! Types and utilities for working with BAM/SAM alignment data.
 //!
 //! This module provides the [`Template`] struct for grouping alignment records
-//! by query name, following the pattern established by `fgbio` (Scala) and
-//! `fgpyo` (Python).
+//! by query name, and [`TemplateIterator`] for iterating over templates from a
+//! query-name grouped BAM file. These follow the pattern established by
+//! `fgbio` (Scala) and `fgpyo` (Python).
 //!
 //! # Source material being ported
 //!
@@ -12,8 +13,13 @@
 //!   lines 44-174 at `fulcrumgenomics/fgbio@768d38c0`.
 //! - fgpyo `Template`: `fgpyo/sam/__init__.py` lines 1346-1561 at
 //!   `fulcrumgenomics/fgpyo@416f0f64`.
+//! - fgbio `templateIterator`: `ZipperBams.scala` line 109 at
+//!   `fulcrumgenomics/fgbio@768d38c0`.
+//! - fgpyo `TemplateIterator`: `fgpyo/sam/__init__.py` lines 1564-1581 at
+//!   `fulcrumgenomics/fgpyo@416f0f64`.
 
 use rust_htslib::bam::Record;
+use std::iter::{FusedIterator, Peekable};
 use thiserror::Error;
 
 /// Errors that can occur when building a [`Template`].
@@ -55,6 +61,18 @@ pub enum TemplateError {
         /// The query name of the template.
         name: Vec<u8>,
     },
+}
+
+/// Errors that can occur when iterating over templates.
+#[derive(Error, Debug)]
+pub enum TemplateIteratorError {
+    /// Error building a template from records.
+    #[error("Failed to build template: {0}")]
+    TemplateBuildError(#[from] TemplateError),
+
+    /// Error reading a BAM record.
+    #[error("Failed to read BAM record: {0}")]
+    BamReadError(#[from] rust_htslib::errors::Error),
 }
 
 /// A collection of alignment records for a single template (query name).
@@ -331,6 +349,158 @@ impl Template {
             && self.r2_secondaries.is_empty()
             && self.r1_supplementaries.is_empty()
             && self.r2_supplementaries.is_empty()
+    }
+}
+
+/// An iterator that yields [`Template`] instances from a query-name grouped BAM reader.
+///
+/// This iterator consumes records from a BAM reader and groups them by query name,
+/// yielding one `Template` per unique query name.
+///
+/// # Requirements
+///
+/// The input BAM must be **query-name sorted or grouped** (i.e., all records with the
+/// same query name must be adjacent). The iterator does NOT sort records internally.
+///
+/// # Streaming behavior and mis-grouped input
+///
+/// The iterator only checks **contiguity**: it groups consecutive records
+/// that share a query name and yields a `Template` when the name changes.
+/// If the input is not query-name grouped (e.g. coordinate-sorted), the
+/// iterator will silently produce **multiple `Template`s for the same
+/// query name** — once per contiguous run.
+///
+/// This is by design. Tracking previously-seen names would require
+/// unbounded state and defeat the streaming property. Callers who need
+/// a guarantee of full grouping should validate the input header
+/// (`@HD SO:queryname` or `GO:query`) or pre-sort with
+/// `samtools sort -n` upstream.
+///
+/// # Example
+///
+/// ```no_run
+/// use fgoxide::bam::TemplateIterator;
+/// use rust_htslib::bam::{Read, Reader};
+///
+/// let mut reader = Reader::from_path("input.bam")?;
+/// for template in TemplateIterator::new(reader.records()) {
+///     let template = template?;
+///     println!("Template: {:?}", template.name());
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct TemplateIterator<I: Iterator> {
+    inner: Peekable<I>,
+}
+
+impl<I> TemplateIterator<I>
+where
+    I: Iterator<Item = Result<Record, rust_htslib::errors::Error>>,
+{
+    /// Creates a new `TemplateIterator` from a record iterator.
+    ///
+    /// The input iterator must yield records in query-name sorted or grouped order.
+    /// All records with the same query name must be adjacent in the input.
+    ///
+    /// # Arguments
+    ///
+    /// * `iter` - An iterator over BAM records (e.g., from `Reader::records()`)
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use fgoxide::bam::TemplateIterator;
+    /// use rust_htslib::bam::{Read, Reader};
+    ///
+    /// let mut reader = Reader::from_path("queryname_sorted.bam")?;
+    /// let templates = TemplateIterator::new(reader.records());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn new(iter: I) -> Self {
+        Self { inner: iter.peekable() }
+    }
+}
+
+impl<I> Iterator for TemplateIterator<I>
+where
+    I: Iterator<Item = Result<Record, rust_htslib::errors::Error>>,
+{
+    type Item = Result<Template, TemplateIteratorError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let first = match self.inner.next()? {
+            Ok(rec) => rec,
+            Err(err) => return Some(Err(TemplateIteratorError::BamReadError(err))),
+        };
+
+        let mut recs = vec![first];
+        loop {
+            match self.inner.peek() {
+                Some(Ok(rec)) if rec.qname() == recs[0].qname() => {
+                    recs.push(self.inner.next().unwrap().unwrap());
+                }
+                // Propagate read errors immediately rather than yielding a partial template.
+                Some(Err(_)) => {
+                    let err = self.inner.next().unwrap().unwrap_err();
+                    return Some(Err(TemplateIteratorError::BamReadError(err)));
+                }
+                _ => break,
+            }
+        }
+
+        Some(Template::new(recs).map_err(TemplateIteratorError::TemplateBuildError))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Lower bound is 0 (the inner iterator may be empty, or all records may share a qname).
+        // Upper bound is the inner upper bound (each record could be its own template).
+        let (_, upper) = self.inner.size_hint();
+        (0, upper)
+    }
+}
+
+impl<I> FusedIterator for TemplateIterator<I> where
+    I: Iterator<Item = Result<Record, rust_htslib::errors::Error>>
+{
+}
+
+/// Extension trait for creating a [`TemplateIterator`] from BAM record iterators.
+///
+/// This trait provides an ergonomic way to convert a BAM record iterator into
+/// a template iterator using method chaining.
+///
+/// # Example
+///
+/// ```no_run
+/// use fgoxide::bam::IntoTemplateIterator;
+/// use rust_htslib::bam::{Read, Reader};
+///
+/// let mut reader = Reader::from_path("queryname_sorted.bam")?;
+/// for template in reader.records().templates() {
+///     let template = template?;
+///     // process template...
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub trait IntoTemplateIterator: Sized {
+    /// The type of the inner iterator.
+    type InnerIter: Iterator<Item = Result<Record, rust_htslib::errors::Error>>;
+
+    /// Converts this iterator into a [`TemplateIterator`].
+    ///
+    /// The input must be query-name sorted or grouped.
+    fn templates(self) -> TemplateIterator<Self::InnerIter>;
+}
+
+impl<I> IntoTemplateIterator for I
+where
+    I: Iterator<Item = Result<Record, rust_htslib::errors::Error>>,
+{
+    type InnerIter = I;
+
+    fn templates(self) -> TemplateIterator<Self::InnerIter> {
+        TemplateIterator::new(self)
     }
 }
 
@@ -877,6 +1047,285 @@ mod tests {
             assert!(template.r2.is_some());
             assert_eq!(template.r1_secondaries.len(), 1);
             assert_eq!(template.r2_supplementaries.len(), 1);
+        }
+    }
+
+    mod template_iterator_tests {
+        use super::*;
+
+        /// Helper to wrap records in Ok() results for the iterator
+        fn records_to_results(
+            recs: Vec<Record>,
+        ) -> Vec<Result<Record, rust_htslib::errors::Error>> {
+            recs.into_iter().map(Ok).collect()
+        }
+
+        #[test]
+        fn test_single_template_paired_end() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let results = records_to_results(vec![r1, r2]);
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let template = iter.next().unwrap().unwrap();
+            assert_eq!(template.name(), Some(b"read1".as_slice()));
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_some());
+
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn test_multiple_templates() {
+            let r1a = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2a = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r1b = make_record(b"read2", PAIRED | FIRST_IN_PAIR);
+            let r2b = make_record(b"read2", PAIRED | LAST_IN_PAIR);
+            let r1c = make_record(b"read3", PAIRED | FIRST_IN_PAIR);
+            let r2c = make_record(b"read3", PAIRED | LAST_IN_PAIR);
+
+            let results = records_to_results(vec![r1a, r2a, r1b, r2b, r1c, r2c]);
+            let templates: Vec<_> =
+                TemplateIterator::new(results.into_iter()).map(|r| r.unwrap()).collect();
+
+            assert_eq!(templates.len(), 3);
+            assert_eq!(templates[0].name(), Some(b"read1".as_slice()));
+            assert_eq!(templates[1].name(), Some(b"read2".as_slice()));
+            assert_eq!(templates[2].name(), Some(b"read3".as_slice()));
+        }
+
+        #[test]
+        fn test_single_end_reads() {
+            let r1 = make_record(b"frag1", 0);
+            let r2 = make_record(b"frag2", 0);
+
+            let results = records_to_results(vec![r1, r2]);
+            let templates: Vec<_> =
+                TemplateIterator::new(results.into_iter()).map(|r| r.unwrap()).collect();
+
+            assert_eq!(templates.len(), 2);
+            assert!(templates[0].r1.is_some());
+            assert!(templates[0].r2.is_none());
+            assert!(templates[1].r1.is_some());
+            assert!(templates[1].r2.is_none());
+        }
+
+        #[test]
+        fn test_template_with_secondaries_and_supplementaries() {
+            let r1_primary = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2_primary = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r1_sec = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+            let r1_supp = make_record(b"read1", PAIRED | FIRST_IN_PAIR | SUPPLEMENTARY);
+
+            let results = records_to_results(vec![r1_primary, r2_primary, r1_sec, r1_supp]);
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let template = iter.next().unwrap().unwrap();
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_some());
+            assert_eq!(template.r1_secondaries.len(), 1);
+            assert_eq!(template.r1_supplementaries.len(), 1);
+
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn test_empty_iterator() {
+            let results: Vec<Result<Record, rust_htslib::errors::Error>> = vec![];
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn test_single_record() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+
+            let results = records_to_results(vec![r1]);
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let template = iter.next().unwrap().unwrap();
+            assert!(template.r1.is_some());
+            assert!(template.r2.is_none());
+
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn test_extension_trait() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let results = records_to_results(vec![r1, r2]);
+            // Use the extension trait
+            let templates: Vec<_> = results.into_iter().templates().map(|r| r.unwrap()).collect();
+
+            assert_eq!(templates.len(), 1);
+            assert!(templates[0].r1.is_some());
+            assert!(templates[0].r2.is_some());
+        }
+
+        #[test]
+        fn test_mixed_templates_varying_sizes() {
+            // Template 1: paired with secondaries
+            let t1_r1 = make_record(b"template1", PAIRED | FIRST_IN_PAIR);
+            let t1_r2 = make_record(b"template1", PAIRED | LAST_IN_PAIR);
+            let t1_sec = make_record(b"template1", PAIRED | FIRST_IN_PAIR | SECONDARY);
+
+            // Template 2: single-end
+            let t2_r1 = make_record(b"template2", 0);
+
+            // Template 3: paired only
+            let t3_r1 = make_record(b"template3", PAIRED | FIRST_IN_PAIR);
+            let t3_r2 = make_record(b"template3", PAIRED | LAST_IN_PAIR);
+
+            let results = records_to_results(vec![t1_r1, t1_r2, t1_sec, t2_r1, t3_r1, t3_r2]);
+            let templates: Vec<_> =
+                TemplateIterator::new(results.into_iter()).map(|r| r.unwrap()).collect();
+
+            assert_eq!(templates.len(), 3);
+
+            // Template 1
+            assert_eq!(templates[0].name(), Some(b"template1".as_slice()));
+            assert!(templates[0].r1.is_some());
+            assert!(templates[0].r2.is_some());
+            assert_eq!(templates[0].r1_secondaries.len(), 1);
+
+            // Template 2
+            assert_eq!(templates[1].name(), Some(b"template2".as_slice()));
+            assert!(templates[1].r1.is_some());
+            assert!(templates[1].r2.is_none());
+
+            // Template 3
+            assert_eq!(templates[2].name(), Some(b"template3".as_slice()));
+            assert!(templates[2].r1.is_some());
+            assert!(templates[2].r2.is_some());
+        }
+
+        #[test]
+        fn test_template_build_error_propagates() {
+            // Two primary R1s should cause a TemplateBuildError
+            let r1a = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r1b = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+
+            let results = records_to_results(vec![r1a, r1b]);
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let result = iter.next().unwrap();
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TemplateIteratorError::TemplateBuildError(TemplateError::MultiplePrimaryR1 { .. })
+            ));
+        }
+
+        #[test]
+        fn test_iterator_continues_after_valid_templates() {
+            // First template is valid, second has records too
+            let r1a = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let r2a = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+            let r1b = make_record(b"read2", PAIRED | FIRST_IN_PAIR);
+
+            let results = records_to_results(vec![r1a, r2a, r1b]);
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            // First template
+            let t1 = iter.next().unwrap().unwrap();
+            assert_eq!(t1.name(), Some(b"read1".as_slice()));
+
+            // Second template
+            let t2 = iter.next().unwrap().unwrap();
+            assert_eq!(t2.name(), Some(b"read2".as_slice()));
+
+            // No more
+            assert!(iter.next().is_none());
+        }
+
+        #[test]
+        fn test_only_r2_template() {
+            // A template with only R2 (missing R1)
+            let r2 = make_record(b"read1", PAIRED | LAST_IN_PAIR);
+
+            let results = records_to_results(vec![r2]);
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let template = iter.next().unwrap().unwrap();
+            assert!(template.r1.is_none());
+            assert!(template.r2.is_some());
+            assert_eq!(template.name(), Some(b"read1".as_slice()));
+        }
+
+        #[test]
+        fn test_read_error_as_first_record() {
+            let results: Vec<Result<Record, rust_htslib::errors::Error>> =
+                vec![Err(rust_htslib::errors::Error::FileNotFound {
+                    path: std::path::PathBuf::from("missing.bam"),
+                })];
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let item = iter.next().unwrap();
+            assert!(matches!(item, Err(TemplateIteratorError::BamReadError(_))));
+            assert!(iter.next().is_none());
+        }
+
+        // Verifies that a read error mid-template propagates immediately rather than
+        // yielding a partial Template followed by the error on the next call.
+        #[test]
+        fn test_read_error_mid_template_yields_error_not_partial() {
+            let r1 = make_record(b"read1", PAIRED | FIRST_IN_PAIR);
+            let results: Vec<Result<Record, rust_htslib::errors::Error>> = vec![
+                Ok(r1),
+                Err(rust_htslib::errors::Error::FileNotFound {
+                    path: std::path::PathBuf::from("missing.bam"),
+                }),
+            ];
+            let mut iter = TemplateIterator::new(results.into_iter());
+
+            let item = iter.next().unwrap();
+            assert!(matches!(item, Err(TemplateIteratorError::BamReadError(_))));
+            assert!(iter.next().is_none());
+        }
+
+        // Round-trips two read pairs through an on-disk BAM file to exercise
+        // TemplateIterator against a real `Reader::from_path`. Once a SamBuilder
+        // is available in this crate the synthesized records below should be
+        // replaced by builder output.
+        #[test]
+        fn test_round_trip_through_bam_file() {
+            use rust_htslib::bam::header::HeaderRecord;
+            use rust_htslib::bam::{Format, Header, Read as _, Reader, Writer};
+            use tempfile::TempDir;
+
+            let recs = vec![
+                make_record(b"read1", PAIRED | FIRST_IN_PAIR),
+                make_record(b"read1", PAIRED | LAST_IN_PAIR),
+                make_record(b"read2", PAIRED | FIRST_IN_PAIR),
+                make_record(b"read2", PAIRED | LAST_IN_PAIR),
+            ];
+
+            let mut header = Header::new();
+            header.push_record(
+                HeaderRecord::new(b"HD").push_tag(b"VN", "1.6").push_tag(b"SO", "queryname"),
+            );
+
+            let tmp = TempDir::new().unwrap();
+            let path = tmp.path().join("templates.bam");
+            {
+                let mut writer = Writer::from_path(&path, &header, Format::Bam).unwrap();
+                for rec in &recs {
+                    writer.write(rec).unwrap();
+                }
+            }
+
+            let mut reader = Reader::from_path(&path).unwrap();
+            let templates: Vec<_> = reader.records().templates().map(|r| r.unwrap()).collect();
+
+            assert_eq!(templates.len(), 2);
+            assert_eq!(templates[0].name(), Some(b"read1".as_slice()));
+            assert_eq!(templates[1].name(), Some(b"read2".as_slice()));
+            assert!(templates[0].r1.is_some() && templates[0].r2.is_some());
+            assert!(templates[1].r1.is_some() && templates[1].r2.is_some());
         }
     }
 }
