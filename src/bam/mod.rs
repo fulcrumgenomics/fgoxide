@@ -1,7 +1,17 @@
 //! Types and utilities for working with BAM/SAM alignment data.
 //!
 //! This module provides the [`Template`] struct for grouping alignment records
-//! by query name, following the pattern established by fgbio (Scala) and fgpyo (Python).
+//! by query name, following the pattern established by `fgbio` (Scala) and
+//! `fgpyo` (Python).
+//!
+//! # Source material being ported
+//!
+//! Pinned to upstream commits at the time this module was written:
+//!
+//! - fgbio `Template` (case class + companion object): `Bams.scala`
+//!   lines 44-174 at `fulcrumgenomics/fgbio@768d38c0`.
+//! - fgpyo `Template`: `fgpyo/sam/__init__.py` lines 1346-1561 at
+//!   `fulcrumgenomics/fgpyo@416f0f64`.
 
 use rust_htslib::bam::Record;
 use thiserror::Error;
