@@ -51,21 +51,66 @@ use crate::{FgError, Result};
 use csv::{
     DeserializeRecordsIntoIter, QuoteStyle, ReaderBuilder, StringRecord, Writer, WriterBuilder,
 };
-use flate2::Compression;
-use flate2::bufread::MultiGzDecoder;
-use flate2::write::GzEncoder;
+use niffler::Level;
+use niffler::send::compression::Format as NifflerFormat;
 use serde::{Serialize, de::DeserializeOwned};
 
-/// The set of file extensions to treat as GZIPPED
 const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
+
+const WRITER_EXTENSIONS: &[(&str, NifflerFormat)] = &[
+    ("gz", NifflerFormat::Gzip),
+    ("bgz", NifflerFormat::Gzip),
+    ("bz2", NifflerFormat::Bzip),
+    ("xz", NifflerFormat::Lzma),
+    ("zst", NifflerFormat::Zstd),
+];
 
 /// The default buffer size when creating buffered readers/writers
 const BUFFER_SIZE: usize = 64 * 1024;
 
+fn level_from_u32(level: u32) -> Level {
+    match level {
+        0 => Level::Zero,
+        1 => Level::One,
+        2 => Level::Two,
+        3 => Level::Three,
+        4 => Level::Four,
+        5 => Level::Five,
+        6 => Level::Six,
+        7 => Level::Seven,
+        8 => Level::Eight,
+        _ => Level::Nine,
+    }
+}
+
+fn map_niffler_err(e: niffler::Error) -> FgError {
+    match e {
+        niffler::Error::IOError(io) => FgError::IoError(io),
+        niffler::Error::FileTooShort => FgError::IoError(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "input is shorter than the 5-byte compression magic-byte window",
+        )),
+        niffler::Error::FeatureDisabled => FgError::IoError(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "niffler feature disabled for detected codec",
+        )),
+    }
+}
+
+fn writer_format_for_path<P: AsRef<Path>>(p: P) -> NifflerFormat {
+    p.as_ref()
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(|ext| {
+            WRITER_EXTENSIONS.iter().find(|(name, _)| *name == ext).map(|(_, fmt)| *fmt)
+        })
+        .unwrap_or(NifflerFormat::No)
+}
+
 /// Unit-struct that contains associated functions for reading and writing Structs to/from
 /// unstructured files.
 pub struct Io {
-    compression: Compression,
+    compression: Level,
     buffer_size: usize,
 }
 
@@ -77,12 +122,14 @@ impl Default for Io {
 }
 
 impl Io {
-    /// Creates a new Io instance with the given compression level.
+    /// Creates a new Io instance with the given compression level (0-9). Levels above 9
+    /// are clamped; zstd's higher levels are not exposed through this constructor.
     pub fn new(compression: u32, buffer_size: usize) -> Io {
-        Io { compression: flate2::Compression::new(compression), buffer_size }
+        Io { compression: level_from_u32(compression), buffer_size }
     }
 
-    /// Returns true if the path ends with a recognized GZIP file extension
+    /// Returns true if the path ends with a recognized GZIP file extension.
+    #[must_use]
     pub fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
         if let Some(ext) = p.as_ref().extension() {
             match ext.to_str() {
@@ -94,35 +141,43 @@ impl Io {
         }
     }
 
-    /// Opens a file for reading.  Transparently handles reading gzipped files based
-    /// extension.
+    /// Opens a file for reading. Compression (gzip, bzip2, xz, zstd) is detected from the
+    /// file's magic bytes; the path extension is ignored. `.bgz` files are read as gzip.
     pub fn new_reader<P>(&self, p: P) -> Result<Box<dyn BufRead + Send>>
     where
         P: AsRef<Path>,
     {
-        let file = File::open(p.as_ref()).map_err(FgError::IoError)?;
-        let buf = BufReader::with_capacity(self.buffer_size, file);
-
-        if Self::is_gzip_path(p) {
-            Ok(Box::new(BufReader::with_capacity(self.buffer_size, MultiGzDecoder::new(buf))))
-        } else {
-            Ok(Box::new(buf))
+        let path = p.as_ref();
+        let file = File::open(path).map_err(FgError::IoError)?;
+        let buffered = BufReader::with_capacity(self.buffer_size, file);
+        match niffler::send::get_reader(Box::new(buffered)) {
+            Ok((reader, _format)) => {
+                // TODO: warn when `_format` disagrees with the path extension
+                // (e.g. a `.vcf.gz` path whose magic bytes are xz).
+                Ok(Box::new(BufReader::with_capacity(self.buffer_size, reader)))
+            }
+            // File shorter than the 5-byte sniff window: treat as plain via a reopen
+            // (correct for regular files; FIFOs shorter than 5 bytes lose those bytes).
+            Err(niffler::Error::FileTooShort) => {
+                let file = File::open(path).map_err(FgError::IoError)?;
+                Ok(Box::new(BufReader::with_capacity(self.buffer_size, file)))
+            }
+            Err(other) => Err(map_niffler_err(other)),
         }
     }
 
-    /// Opens a file for writing. Transparently handles writing GZIP'd data if the file
-    /// ends with a recognized GZIP extension.
+    /// Opens a file for writing. The output codec is chosen from the path extension:
+    /// `.gz`/`.bgz` to gzip, `.bz2` to bzip2, `.xz` to xz, `.zst` to zstd, anything else
+    /// uncompressed. `.bgz` currently produces plain gzip, not true BGZF.
     pub fn new_writer<P>(&self, p: P) -> Result<BufWriter<Box<dyn Write + Send>>>
     where
         P: AsRef<Path>,
     {
+        let format = writer_format_for_path(&p);
         let file = File::create(p.as_ref()).map_err(FgError::IoError)?;
-        let write: Box<dyn Write + Send> = if Io::is_gzip_path(p) {
-            Box::new(GzEncoder::new(file, self.compression))
-        } else {
-            Box::new(file)
-        };
-
+        let raw: Box<dyn Write + Send> = Box::new(file);
+        let write =
+            niffler::send::get_writer(raw, format, self.compression).map_err(map_niffler_err)?;
         Ok(BufWriter::with_capacity(self.buffer_size, write))
     }
 
@@ -441,6 +496,105 @@ mod tests {
 
         // Also check that we actually wrote gzipped data to the gzip file!
         assert_ne!(text.metadata().unwrap().len(), gzipped.metadata().unwrap().len());
+    }
+
+    #[rstest::rstest]
+    #[case::gz("gzipped.txt.gz", true)]
+    #[case::bgz("bgzipped.txt.bgz", true)]
+    #[case::bz2("compressed.txt.bz2", true)]
+    #[case::xz("compressed.txt.xz", true)]
+    #[case::zst("compressed.txt.zst", true)]
+    #[case::plain("plain.txt", false)]
+    fn test_round_trip_all_compression_formats(
+        #[case] file_name: &str,
+        #[case] expect_compressed_smaller: bool,
+    ) {
+        let lines: Vec<String> = (0..200).map(|i| format!("line-{i}-aaaaaaaaaaaaaaaa")).collect();
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join(file_name);
+        let plain = tempdir.path().join("plain-reference.txt");
+
+        let io = Io::default();
+        io.write_lines(&path, &lines).unwrap();
+        io.write_lines(&plain, &lines).unwrap();
+
+        let read_back = io.read_lines(&path).unwrap();
+        assert_eq!(read_back, lines, "round-trip failed for {file_name}");
+
+        if expect_compressed_smaller {
+            assert!(
+                path.metadata().unwrap().len() < plain.metadata().unwrap().len(),
+                "{file_name} should be smaller than the uncompressed reference"
+            );
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::zstd_payload_in_gz_path("liar.gz", Some(NifflerFormat::Zstd))]
+    #[case::plain_payload_in_zst_path("liar.zst", None)]
+    fn test_magic_bytes_override_extension(
+        #[case] file_name: &str,
+        #[case] write_as: Option<NifflerFormat>,
+    ) {
+        let lines = vec!["alpha", "beta", "gamma"];
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join(file_name);
+
+        match write_as {
+            Some(format) => {
+                let raw = std::fs::File::create(&path).unwrap();
+                let mut w = niffler::send::get_writer(Box::new(raw), format, Level::Five).unwrap();
+                for l in &lines {
+                    writeln!(w, "{l}").unwrap();
+                }
+            }
+            None => std::fs::write(&path, b"alpha\nbeta\ngamma\n").unwrap(),
+        }
+
+        let read_back = Io::default().read_lines(&path).unwrap();
+        assert_eq!(read_back, lines);
+    }
+
+    #[test]
+    fn test_multi_member_gzip_round_trip() {
+        // Concatenated gzip members (as produced by `cat a.gz b.gz` or bgzip output) must
+        // read back as a single stream. Relies on niffler routing gzip through MultiGzDecoder.
+        let tempdir = TempDir::new().unwrap();
+        let part1 = tempdir.path().join("part1.gz");
+        let part2 = tempdir.path().join("part2.gz");
+        let combined = tempdir.path().join("combined.gz");
+
+        let io = Io::default();
+        io.write_lines(&part1, ["line1", "line2"]).unwrap();
+        io.write_lines(&part2, ["line3", "line4"]).unwrap();
+
+        let mut bytes = std::fs::read(&part1).unwrap();
+        bytes.extend(std::fs::read(&part2).unwrap());
+        std::fs::write(&combined, &bytes).unwrap();
+
+        let lines = io.read_lines(&combined).unwrap();
+        assert_eq!(lines, vec!["line1", "line2", "line3", "line4"]);
+    }
+
+    #[rstest::rstest]
+    #[case::empty(b"" as &[u8], &[] as &[&str])]
+    #[case::below_sniff_window(b"x", &["x"])]
+    fn test_read_below_sniff_window(#[case] bytes: &[u8], #[case] expected: &[&str]) {
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("tiny.txt");
+        std::fs::write(&path, bytes).unwrap();
+        let lines = Io::default().read_lines(&path).unwrap();
+        assert_eq!(lines, expected);
+    }
+
+    #[rstest::rstest]
+    #[case("a.gz", true)]
+    #[case("a.bgz", true)]
+    #[case("a.zst", false)]
+    #[case("a.txt", false)]
+    #[case("noext", false)]
+    fn test_is_gzip_path(#[case] path: &str, #[case] expected: bool) {
+        assert_eq!(Io::is_gzip_path(Path::new(path)), expected);
     }
 
     #[test]

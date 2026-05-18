@@ -18,8 +18,9 @@ rust-version = "1.85"
 [dependencies]
 thiserror = "^2"
 
-# For auto-gzip handing of files
-flate2 = "^1"
+# Magic-byte sniffing of compressed inputs (gz/bz2/xz/zstd) and dispatch on write.
+# niffler's default features pull in gzip (via flate2), bzip2, xz, and zstd codecs.
+niffler = "^3"
 
 # For auto-serialization of structs to csv/tsv
 csv = "^1"
