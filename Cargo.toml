@@ -15,12 +15,47 @@ categories = ["rust-patterns"]
 keywords = ["utilities"]
 rust-version = "1.85"
 
+[features]
+# Default keeps gzip available (the historical fgoxide behaviour) while letting
+# downstreams opt out of liblzma / zstd-sys C deps by disabling default features.
+default = ["gz"]
+# Forward each codec to niffler. niffler's per-codec features mark its optional backend
+# crates as needed but do not select a concrete backend implementation (niffler only does
+# that under its own `default` feature). We pull the backends in directly so each codec
+# is self-contained and downstreams can disable individual codecs cleanly.
+gz = ["niffler/gz", "dep:flate2", "dep:gzp"]
+bz2 = ["niffler/bz2", "dep:bzip2"]
+xz = ["niffler/lzma", "dep:liblzma"]
+zstd = ["niffler/zstd", "dep:zstd"]
+
 [dependencies]
 thiserror = "^2"
+log = "^0.4"
 
 # Magic-byte sniffing of compressed inputs (gz/bz2/xz/zstd) and dispatch on write.
-# niffler's default features pull in gzip (via flate2), bzip2, xz, and zstd codecs.
-niffler = "^3"
+# Codec backends are toggled through the feature flags above; default-features=false
+# means none of niffler's compression backends are pulled in unless we ask for them.
+niffler = { version = "^3", default-features = false }
+
+# Backend crates for niffler's per-codec features. niffler marks these optional but does
+# not pick a backend implementation under its per-codec feature flags, so fgoxide pulls
+# them in directly with their own default features.
+flate2 = { version = "^1", optional = true }
+bzip2 = { version = "^0.6", optional = true }
+liblzma = { version = "^0.4", optional = true }
+
+# gzp drives the .gz / .bgz write path so that .gz output is real BGZF (multi-member
+# gzip with the BSIZE-bearing extra field plus an EOF block) by default. Pure-Rust
+# deflate via miniz_oxide matches niffler's prior behaviour; downstreams that want a
+# zlib / zlib-ng backend can override features on gzp directly.
+# NB: gzp's deflate_rust / deflate_zlib / deflate_zlib_ng backends are effectively
+# mutually exclusive at compile time and cargo's feature unification can flip the
+# backend, so be deliberate when adding gzp features downstream.
+gzp = { version = "2.0.2", optional = true, default-features = false, features = ["deflate_rust"] }
+
+# Direct zstd handle for the .zst write path so we can reach zstd's negative
+# "fast mode" levels (-7..-1), which niffler's Level enum cannot express.
+zstd = { version = "0.13", optional = true, default-features = false }
 
 # For auto-serialization of structs to csv/tsv
 csv = "^1"

@@ -19,6 +19,9 @@ pub enum FgError {
 
     #[error("Error parsing delimited data file header.")]
     DelimFileHeaderError { expected: String, found: String },
+
+    #[error("Compression codec {codec} is not enabled in this fgoxide build.")]
+    UnsupportedCodec { codec: &'static str },
 }
 
 /// Result type that should be used everywhere

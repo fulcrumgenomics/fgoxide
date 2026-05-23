@@ -28,7 +28,9 @@
 //!
 //! fn main() -> Result<(), Box<dyn Error>> {
 //!     let tempdir = TempDir::new()?;
-//!     let path = tempdir.path().join("test_file.csv.gz");
+//!     // Picks up gzip compression from the extension when the `gz` feature is enabled;
+//!     // the test below uses a plain extension so the example runs regardless of features.
+//!     let path = tempdir.path().join("test_file.csv");
 //!
 //!     let io = Io::default();
 //!     let lines = ["sample_name,count,gene", "sample1,100,SEPT14", "sample2,5,MIC"];
@@ -57,20 +59,73 @@ use serde::{Serialize, de::DeserializeOwned};
 
 const GZIP_EXTENSIONS: [&str; 2] = ["gz", "bgz"];
 
-const WRITER_EXTENSIONS: &[(&str, NifflerFormat)] = &[
-    ("gz", NifflerFormat::Gzip),
-    ("bgz", NifflerFormat::Gzip),
-    ("bz2", NifflerFormat::Bzip),
-    ("xz", NifflerFormat::Lzma),
-    ("zst", NifflerFormat::Zstd),
-];
+/// The compression codec to apply when writing a file. Selected from the path extension by
+/// [`compression_for_path`]; passed to [`Io::new_writer`] (indirectly) to choose the writer
+/// backend. `Gzip` and `Bgzf` both denote a BGZF-encoded gzip stream that any plain gzip
+/// reader can still inflate. Distinguishing them is a hook for future code that might want to
+/// vary block parameters per extension; the current writer treats them identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
+    /// No compression (plain bytes).
+    None,
+    /// `.gz`: BGZF-encoded gzip (via `gzp::BgzfSyncWriter`).
+    Gzip,
+    /// `.bgz`: BGZF-encoded gzip (via `gzp::BgzfSyncWriter`).
+    Bgzf,
+    /// `.bz2`: bzip2.
+    Bzip2,
+    /// `.xz`: xz / lzma.
+    Xz,
+    /// `.zst`: zstandard.
+    Zstd,
+}
+
+impl Compression {
+    /// Static identifier used in error messages when a codec is requested but its feature
+    /// flag is disabled at compile time. Only referenced from the disabled-feature arms in
+    /// [`Io::build_writer`], so it picks up `dead_code` warnings when every codec is on.
+    #[allow(dead_code)]
+    fn codec_name(self) -> &'static str {
+        match self {
+            Compression::None => "none",
+            Compression::Gzip => "gz",
+            Compression::Bgzf => "bgz",
+            Compression::Bzip2 => "bz2",
+            Compression::Xz => "xz",
+            Compression::Zstd => "zst",
+        }
+    }
+}
+
+/// Returns the compression codec implied by `path`'s file extension. Anything unrecognised
+/// (including no extension) maps to [`Compression::None`].
+#[must_use]
+pub fn compression_for_path<P: AsRef<Path>>(p: P) -> Compression {
+    match p.as_ref().extension().and_then(|e| e.to_str()) {
+        Some("gz") => Compression::Gzip,
+        Some("bgz") => Compression::Bgzf,
+        Some("bz2") => Compression::Bzip2,
+        Some("xz") => Compression::Xz,
+        Some("zst") => Compression::Zstd,
+        _ => Compression::None,
+    }
+}
 
 /// The default buffer size when creating buffered readers/writers
 const BUFFER_SIZE: usize = 64 * 1024;
 
-fn level_from_u32(level: u32) -> Level {
+/// Clamp a raw compression level into a [`niffler::Level`] variant. `niffler::Level` is
+/// `Zero..=TwentyOne`, matching zstd's positive-level range. Anything below zero clamps to
+/// `Zero`; anything above twenty-one clamps to `TwentyOne`. Codecs whose native range is
+/// narrower (gzip 0..=9, bzip2 1..=9) are clamped further inside the dispatch arms below.
+///
+/// Only referenced from codec arms that go through niffler (bz2, xz). Marked allow-dead
+/// so a build with only the gz / zstd features (which both bypass niffler's writer) does
+/// not warn.
+#[allow(dead_code)]
+fn niffler_level_from_i32(level: i32) -> Level {
     match level {
-        0 => Level::Zero,
+        i32::MIN..=0 => Level::Zero,
         1 => Level::One,
         2 => Level::Two,
         3 => Level::Three,
@@ -79,7 +134,19 @@ fn level_from_u32(level: u32) -> Level {
         6 => Level::Six,
         7 => Level::Seven,
         8 => Level::Eight,
-        _ => Level::Nine,
+        9 => Level::Nine,
+        10 => Level::Ten,
+        11 => Level::Eleven,
+        12 => Level::Twelve,
+        13 => Level::Thirteen,
+        14 => Level::Fourteen,
+        15 => Level::Fifteen,
+        16 => Level::Sixteen,
+        17 => Level::Seventeen,
+        18 => Level::Eighteen,
+        19 => Level::Nineteen,
+        20 => Level::Twenty,
+        _ => Level::TwentyOne,
     }
 }
 
@@ -90,46 +157,54 @@ fn map_niffler_err(e: niffler::Error) -> FgError {
             std::io::ErrorKind::UnexpectedEof,
             "input is shorter than the 5-byte compression magic-byte window",
         )),
-        niffler::Error::FeatureDisabled => FgError::IoError(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "niffler feature disabled for detected codec",
-        )),
+        niffler::Error::FeatureDisabled => {
+            FgError::UnsupportedCodec { codec: "compression codec disabled in niffler" }
+        }
     }
-}
-
-fn writer_format_for_path<P: AsRef<Path>>(p: P) -> NifflerFormat {
-    p.as_ref()
-        .extension()
-        .and_then(|e| e.to_str())
-        .and_then(|ext| {
-            WRITER_EXTENSIONS.iter().find(|(name, _)| *name == ext).map(|(_, fmt)| *fmt)
-        })
-        .unwrap_or(NifflerFormat::No)
 }
 
 /// Unit-struct that contains associated functions for reading and writing Structs to/from
 /// unstructured files.
 pub struct Io {
-    compression: Level,
+    /// Raw user-supplied compression level. Stored unclamped; each codec's writer clamps to
+    /// its own native range inside [`Io::new_writer`]. Negative values are meaningful for
+    /// zstd's "fast mode" (-7..=-1) and become 0 / minimum for every other codec.
+    ///
+    /// `allow(dead_code)`: when every codec feature is disabled there's no writer arm that
+    /// reads this field, but it still needs to exist so the public `Io::with_level` API
+    /// stays uniform across feature configurations.
+    #[allow(dead_code)]
+    compression: i32,
     buffer_size: usize,
 }
 
-/// Returns a Default implementation that will compress to gzip level 5.
+/// Returns a Default implementation that will compress to level 5 (gzip-equivalent middle).
 impl Default for Io {
     fn default() -> Self {
-        Io::new(5, BUFFER_SIZE)
+        Io::with_level(5, BUFFER_SIZE)
     }
 }
 
 impl Io {
-    /// Creates a new Io instance with the given compression level (0-9). Levels above 9
-    /// are clamped; zstd's higher levels are not exposed through this constructor.
-    pub fn new(compression: u32, buffer_size: usize) -> Io {
-        Io { compression: level_from_u32(compression), buffer_size }
+    /// Creates a new `Io` instance with the given raw compression level and read/write
+    /// buffer size. The level is stored uninterpreted; the per-codec writer clamps it to its
+    /// own native range when a writer is constructed. For example, `with_level(15, _)` will
+    /// produce level 15 for `.zst` writes and level 9 for `.gz` writes. Negative values
+    /// (-7..=-1) reach zstd's fast-mode levels and have no effect on other codecs.
+    pub fn with_level(level: i32, buffer_size: usize) -> Io {
+        Io { compression: level, buffer_size }
     }
 
     /// Returns true if the path ends with a recognized GZIP file extension.
+    ///
+    /// Retained for backwards compatibility; for new code prefer [`compression_for_path`],
+    /// which covers every codec the writer understands rather than just gzip.
     #[must_use]
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `compression_for_path` instead; \
+        this predicate predates magic-byte detection and lumps `.bgz` in with `.gz`"
+    )]
     pub fn is_gzip_path<P: AsRef<Path>>(p: P) -> bool {
         if let Some(ext) = p.as_ref().extension() {
             match ext.to_str() {
@@ -143,6 +218,9 @@ impl Io {
 
     /// Opens a file for reading. Compression (gzip, bzip2, xz, zstd) is detected from the
     /// file's magic bytes; the path extension is ignored. `.bgz` files are read as gzip.
+    ///
+    /// For files shorter than the 5-byte sniff window the entire content is read into memory
+    /// once and replayed; this avoids the FIFO byte-loss footgun of reopening the path.
     pub fn new_reader<P>(&self, p: P) -> Result<Box<dyn BufRead + Send>>
     where
         P: AsRef<Path>,
@@ -151,34 +229,122 @@ impl Io {
         let file = File::open(path).map_err(FgError::IoError)?;
         let buffered = BufReader::with_capacity(self.buffer_size, file);
         match niffler::send::get_reader(Box::new(buffered)) {
-            Ok((reader, _format)) => {
-                // TODO: warn when `_format` disagrees with the path extension
-                // (e.g. a `.vcf.gz` path whose magic bytes are xz).
+            Ok((reader, format)) => {
+                self.warn_on_extension_mismatch(path, format);
                 Ok(Box::new(BufReader::with_capacity(self.buffer_size, reader)))
             }
-            // File shorter than the 5-byte sniff window: treat as plain via a reopen
-            // (correct for regular files; FIFOs shorter than 5 bytes lose those bytes).
+            // File shorter than the 5-byte sniff window: read the remaining bytes into a
+            // Vec and serve from memory. Reopens the path, so this is only honest for
+            // regular files; FIFOs whose writer side already closed below the sniff
+            // threshold see an empty replay, but that case is exotic enough not to design
+            // around here.
             Err(niffler::Error::FileTooShort) => {
-                let file = File::open(path).map_err(FgError::IoError)?;
-                Ok(Box::new(BufReader::with_capacity(self.buffer_size, file)))
+                use std::io::Read;
+                let mut file = File::open(path).map_err(FgError::IoError)?;
+                let mut bytes = Vec::with_capacity(5);
+                file.read_to_end(&mut bytes).map_err(FgError::IoError)?;
+                Ok(Box::new(std::io::Cursor::new(bytes)))
             }
             Err(other) => Err(map_niffler_err(other)),
         }
     }
 
+    /// Emit a `log::warn!` when the magic-byte-detected codec disagrees with the path
+    /// extension (e.g. a `.gz` file whose magic bytes say zstd). Magic bytes win for the
+    /// actual decode; this is purely advisory.
+    fn warn_on_extension_mismatch(&self, path: &Path, detected: NifflerFormat) {
+        let from_ext = match compression_for_path(path) {
+            Compression::None => NifflerFormat::No,
+            Compression::Gzip | Compression::Bgzf => NifflerFormat::Gzip,
+            Compression::Bzip2 => NifflerFormat::Bzip,
+            Compression::Xz => NifflerFormat::Lzma,
+            Compression::Zstd => NifflerFormat::Zstd,
+        };
+        if from_ext != detected {
+            log::warn!(
+                "compression mismatch reading {}: extension implies {:?}, magic bytes say {:?}",
+                path.display(),
+                from_ext,
+                detected,
+            );
+        }
+    }
+
     /// Opens a file for writing. The output codec is chosen from the path extension:
-    /// `.gz`/`.bgz` to gzip, `.bz2` to bzip2, `.xz` to xz, `.zst` to zstd, anything else
-    /// uncompressed. `.bgz` currently produces plain gzip, not true BGZF.
+    /// `.gz`/`.bgz` produce BGZF-encoded gzip (via `gzp::BgzfSyncWriter`, so output stays
+    /// readable by every tabix/htslib-flavoured tool), `.bz2` produces bzip2, `.xz`
+    /// produces xz, `.zst` produces zstd (with native support for zstd's negative
+    /// "fast mode" levels), anything else uncompressed.
+    ///
+    /// Codecs whose feature is disabled at compile time return
+    /// [`FgError::UnsupportedCodec`].
     pub fn new_writer<P>(&self, p: P) -> Result<BufWriter<Box<dyn Write + Send>>>
     where
         P: AsRef<Path>,
     {
-        let format = writer_format_for_path(&p);
+        let codec = compression_for_path(&p);
         let file = File::create(p.as_ref()).map_err(FgError::IoError)?;
-        let raw: Box<dyn Write + Send> = Box::new(file);
-        let write =
-            niffler::send::get_writer(raw, format, self.compression).map_err(map_niffler_err)?;
-        Ok(BufWriter::with_capacity(self.buffer_size, write))
+        let inner = self.build_writer(file, codec)?;
+        Ok(BufWriter::with_capacity(self.buffer_size, inner))
+    }
+
+    /// Wrap `file` in the writer pipeline for `codec`, clamping the stored level to the
+    /// codec's native range. Split out from [`Io::new_writer`] so the dispatch table is
+    /// easy to read and so feature-gated arms can be `cfg`'d cleanly.
+    fn build_writer(&self, file: File, codec: Compression) -> Result<Box<dyn Write + Send>> {
+        match codec {
+            Compression::None => Ok(Box::new(file)),
+
+            #[cfg(feature = "gz")]
+            Compression::Gzip | Compression::Bgzf => {
+                // gzip/BGZF range is 0..=9; clamp raw level into that window before handing
+                // it to gzp. Negative input clamps to zero (= store, no deflate work).
+                let level = self.compression.clamp(0, 9) as u32;
+                let bgzf = gzp::BgzfSyncWriter::new(file, gzp::Compression::new(level));
+                Ok(Box::new(bgzf))
+            }
+            #[cfg(not(feature = "gz"))]
+            Compression::Gzip | Compression::Bgzf => {
+                Err(FgError::UnsupportedCodec { codec: codec.codec_name() })
+            }
+
+            #[cfg(feature = "bz2")]
+            Compression::Bzip2 => {
+                // bzip2 valid levels are 1..=9; niffler enforces this internally too but
+                // we clamp here so a `with_level(0, _)` user gets level 1 rather than
+                // niffler's internal default.
+                let level = niffler_level_from_i32(self.compression.clamp(1, 9));
+                let raw: Box<dyn Write + Send> = Box::new(file);
+                niffler::send::get_writer(raw, NifflerFormat::Bzip, level).map_err(map_niffler_err)
+            }
+            #[cfg(not(feature = "bz2"))]
+            Compression::Bzip2 => Err(FgError::UnsupportedCodec { codec: codec.codec_name() }),
+
+            #[cfg(feature = "xz")]
+            Compression::Xz => {
+                // xz/lzma preset levels are 0..=9.
+                let level = niffler_level_from_i32(self.compression.clamp(0, 9));
+                let raw: Box<dyn Write + Send> = Box::new(file);
+                niffler::send::get_writer(raw, NifflerFormat::Lzma, level).map_err(map_niffler_err)
+            }
+            #[cfg(not(feature = "xz"))]
+            Compression::Xz => Err(FgError::UnsupportedCodec { codec: codec.codec_name() }),
+
+            #[cfg(feature = "zstd")]
+            Compression::Zstd => {
+                // zstd supports negative "fast mode" levels (-7..=-1) and positive levels
+                // up to 22. Bypass niffler entirely so the raw i32 reaches the codec; this
+                // is the only way to express the negative range, since niffler's `Level`
+                // enum starts at `Zero`. Clamp into zstd's documented range so a user
+                // who passes -8 or 23 gets a defined boundary rather than a codec error.
+                let level = self.compression.clamp(-7, 22);
+                let encoder =
+                    zstd::stream::write::Encoder::new(file, level).map_err(FgError::IoError)?;
+                Ok(Box::new(encoder.auto_finish()))
+            }
+            #[cfg(not(feature = "zstd"))]
+            Compression::Zstd => Err(FgError::UnsupportedCodec { codec: codec.codec_name() }),
+        }
     }
 
     /// Reads lines from a file into a Vec
@@ -477,6 +643,7 @@ mod tests {
         assert_eq!(r2, lines);
     }
 
+    #[cfg(feature = "gz")]
     #[test]
     fn test_reading_and_writing_gzip_files() {
         let lines = vec!["foo", "bar", "baz"];
@@ -499,11 +666,11 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[case::gz("gzipped.txt.gz", true)]
-    #[case::bgz("bgzipped.txt.bgz", true)]
-    #[case::bz2("compressed.txt.bz2", true)]
-    #[case::xz("compressed.txt.xz", true)]
-    #[case::zst("compressed.txt.zst", true)]
+    #[cfg_attr(feature = "gz", case::gz("gzipped.txt.gz", true))]
+    #[cfg_attr(feature = "gz", case::bgz("bgzipped.txt.bgz", true))]
+    #[cfg_attr(feature = "bz2", case::bz2("compressed.txt.bz2", true))]
+    #[cfg_attr(feature = "xz", case::xz("compressed.txt.xz", true))]
+    #[cfg_attr(feature = "zstd", case::zst("compressed.txt.zst", true))]
     #[case::plain("plain.txt", false)]
     fn test_round_trip_all_compression_formats(
         #[case] file_name: &str,
@@ -529,6 +696,9 @@ mod tests {
         }
     }
 
+    // Requires both gz (so the .gz path-extension writes BGZF that we re-read) and zstd
+    // (so we can plant a zstd payload at a .gz path to verify magic-bytes-win behaviour).
+    #[cfg(all(feature = "gz", feature = "zstd"))]
     #[rstest::rstest]
     #[case::zstd_payload_in_gz_path("liar.gz", Some(NifflerFormat::Zstd))]
     #[case::plain_payload_in_zst_path("liar.zst", None)]
@@ -555,6 +725,7 @@ mod tests {
         assert_eq!(read_back, lines);
     }
 
+    #[cfg(feature = "gz")]
     #[test]
     fn test_multi_member_gzip_round_trip() {
         // Concatenated gzip members (as produced by `cat a.gz b.gz` or bgzip output) must
@@ -594,7 +765,144 @@ mod tests {
     #[case("a.txt", false)]
     #[case("noext", false)]
     fn test_is_gzip_path(#[case] path: &str, #[case] expected: bool) {
-        assert_eq!(Io::is_gzip_path(Path::new(path)), expected);
+        #[allow(deprecated)]
+        let got = Io::is_gzip_path(Path::new(path));
+        assert_eq!(got, expected);
+    }
+
+    #[rstest::rstest]
+    #[case("a.gz", Compression::Gzip)]
+    #[case("a.bgz", Compression::Bgzf)]
+    #[case("a.bz2", Compression::Bzip2)]
+    #[case("a.xz", Compression::Xz)]
+    #[case("a.zst", Compression::Zstd)]
+    #[case("a.txt", Compression::None)]
+    #[case("noext", Compression::None)]
+    fn test_compression_for_path(#[case] path: &str, #[case] expected: Compression) {
+        assert_eq!(compression_for_path(Path::new(path)), expected);
+    }
+
+    /// Both ends of each codec's level range must round-trip cleanly. We don't assert
+    /// "higher level produces strictly smaller output": on small or already-near-optimal
+    /// payloads, level 9 can edge out level 1 by a few bytes either way (zstd's higher
+    /// levels in particular trade off differently). The point of this test is that the
+    /// per-codec clamp in `Io::build_writer` doesn't break correctness at the boundaries.
+    #[cfg(any(feature = "gz", feature = "bz2", feature = "xz", feature = "zstd"))]
+    #[rstest::rstest]
+    #[cfg_attr(feature = "gz", case::gz("level.txt.gz"))]
+    #[cfg_attr(feature = "gz", case::bgz("level.txt.bgz"))]
+    #[cfg_attr(feature = "bz2", case::bz2("level.txt.bz2"))]
+    #[cfg_attr(feature = "xz", case::xz("level.txt.xz"))]
+    #[cfg_attr(feature = "zstd", case::zst("level.txt.zst"))]
+    fn test_round_trip_at_level_boundaries(#[case] file_name: &str) {
+        let lines: Vec<String> = (0..500).map(|i| format!("line-{i}-aaaaaaaaaaaaaaaa")).collect();
+        let tempdir = TempDir::new().unwrap();
+        let low_path = tempdir.path().join(format!("low-{file_name}"));
+        let high_path = tempdir.path().join(format!("high-{file_name}"));
+
+        // level=1 maps to each codec's minimum useful level; level=9 saturates the
+        // gzip/bzip range and stays well-defined for xz/zstd via the niffler clamp.
+        Io::with_level(1, BUFFER_SIZE).write_lines(&low_path, &lines).unwrap();
+        Io::with_level(9, BUFFER_SIZE).write_lines(&high_path, &lines).unwrap();
+
+        let io = Io::default();
+        assert_eq!(io.read_lines(&low_path).unwrap(), lines);
+        assert_eq!(io.read_lines(&high_path).unwrap(), lines);
+    }
+
+    /// BGZF files must end with the 28-byte EOF marker block (an empty BGZF block).
+    /// tabix/htslib/IGV use this as a "complete file" sentinel; gzp writes it on `Drop`.
+    /// See SAM spec §4.1.2.
+    #[cfg(feature = "gz")]
+    #[test]
+    fn test_bgzf_eof_block_marker() {
+        const BGZF_EOF: [u8; 28] = [
+            0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43,
+            0x02, 0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("eof.txt.gz");
+        Io::default().write_lines(&path, ["hello", "world"]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(
+            bytes.ends_with(&BGZF_EOF),
+            ".gz output is missing the BGZF EOF block marker (tabix/htslib won't see it as complete)"
+        );
+    }
+
+    /// zstd's negative "fast mode" levels (-7..=-1) are reachable only by bypassing
+    /// niffler. Round-trip via the direct zstd encoder path in `build_writer`.
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn test_negative_zstd_level_round_trip() {
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("fast.txt.zst");
+        let lines: Vec<String> = (0..200).map(|i| format!("line-{i}-aaaaaaaaaaaaaaaa")).collect();
+        Io::with_level(-5, BUFFER_SIZE).write_lines(&path, &lines).unwrap();
+        let read_back = Io::default().read_lines(&path).unwrap();
+        assert_eq!(read_back, lines);
+    }
+
+    /// Concatenated zstd frames must read back as one stream (matches `cat a.zst b.zst`).
+    #[cfg(feature = "zstd")]
+    #[test]
+    fn test_concatenated_zstd_frames_round_trip() {
+        let tempdir = TempDir::new().unwrap();
+        let part1 = tempdir.path().join("p1.zst");
+        let part2 = tempdir.path().join("p2.zst");
+        let combined = tempdir.path().join("combined.zst");
+        let io = Io::default();
+        io.write_lines(&part1, ["line1", "line2"]).unwrap();
+        io.write_lines(&part2, ["line3", "line4"]).unwrap();
+        let mut bytes = std::fs::read(&part1).unwrap();
+        bytes.extend(std::fs::read(&part2).unwrap());
+        std::fs::write(&combined, &bytes).unwrap();
+        let lines = io.read_lines(&combined).unwrap();
+        assert_eq!(lines, vec!["line1", "line2", "line3", "line4"]);
+    }
+
+    /// Truncating a compressed stream mid-payload must surface as a clean error, not a
+    /// panic. We only assert "fails" because each codec maps truncation to its own io
+    /// error kind.
+    #[cfg(feature = "gz")]
+    #[test]
+    fn test_truncated_gz_returns_error() {
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("trunc.txt.gz");
+        let io = Io::default();
+        let lines: Vec<String> = (0..200).map(|i| format!("line-{i}-aaaaaaaaaaaaaaaa")).collect();
+        io.write_lines(&path, &lines).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        // Drop the last 16 bytes to cut into the gzip trailer / final deflate block.
+        std::fs::write(&path, &bytes[..bytes.len() - 16]).unwrap();
+        assert!(io.read_lines(&path).is_err());
+    }
+
+    /// Asking for a codec whose feature isn't enabled should produce
+    /// `FgError::UnsupportedCodec`, not a panic. Exercises the disabled-feature arms in
+    /// `Io::build_writer`. Only meaningful when at least one codec is off.
+    #[cfg(not(feature = "xz"))]
+    #[test]
+    fn test_disabled_codec_maps_to_unsupported() {
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("nope.txt.xz");
+        match Io::default().new_writer(&path) {
+            Err(FgError::UnsupportedCodec { codec }) => assert_eq!(codec, "xz"),
+            Err(other) => panic!("expected UnsupportedCodec, got {other:?}"),
+            Ok(_) => panic!("expected UnsupportedCodec, got Ok"),
+        }
+    }
+
+    /// `Io::new_reader` returns a `BufRead`; iterating `.lines()` is the contract every
+    /// downstream relies on. Cover plain and compressed paths if available.
+    #[test]
+    fn test_reader_implements_bufread_lines() {
+        let tempdir = TempDir::new().unwrap();
+        let path = tempdir.path().join("buf.txt");
+        std::fs::write(&path, "a\nb\nc\n").unwrap();
+        let reader = Io::default().new_reader(&path).unwrap();
+        let lines: Vec<String> = reader.lines().collect::<std::io::Result<_>>().unwrap();
+        assert_eq!(lines, vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -602,7 +910,12 @@ mod tests {
         let recs: Vec<Rec> = vec![];
         let tmp = TempDir::new().unwrap();
         let csv = tmp.path().join("recs.csv");
+        // Use the gz extension when the gz feature is on so this test continues to cover the
+        // compressed-write code path; fall back to plain when the feature is disabled.
+        #[cfg(feature = "gz")]
         let tsv = tmp.path().join("recs.tsv.gz");
+        #[cfg(not(feature = "gz"))]
+        let tsv = tmp.path().join("recs.tsv");
 
         let df = DelimFile::default();
         df.write_csv(&csv, &recs).unwrap();
@@ -622,7 +935,12 @@ mod tests {
         ];
         let tmp = TempDir::new().unwrap();
         let csv = tmp.path().join("recs.csv");
+        // Use the gz extension when the gz feature is on so this test continues to cover the
+        // compressed-write code path; fall back to plain when the feature is disabled.
+        #[cfg(feature = "gz")]
         let tsv = tmp.path().join("recs.tsv.gz");
+        #[cfg(not(feature = "gz"))]
+        let tsv = tmp.path().join("recs.tsv");
 
         let df = DelimFile::default();
         df.write_csv(&csv, &recs).unwrap();
