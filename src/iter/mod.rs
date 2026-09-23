@@ -38,9 +38,17 @@ type PanicUnwindErr = Box<dyn Any + Send>;
 ///
 /// The chunked iterator can panic in the following circumstances:
 ///     - panics if the underlying iterator panics after the same number of ``next()`` calls.
+///
+/// Dropping the iterator before it is exhausted disconnects the channel and joins the read-ahead
+/// thread, so the thread has stopped by the time ``drop`` returns. The thread only notices the
+/// disconnect at its next send, so ``drop`` blocks while the underlying iterator produces up to one
+/// more chunk; if the underlying iterator's ``next()`` blocks indefinitely (e.g. reading an
+/// interactive stdin that never reaches EOF), ``drop`` blocks too. Panics raised by the read-ahead
+/// thread after the iterator is dropped are discarded.
 pub struct ChunkedReadAheadIterator<T: Send + 'static> {
-    /// The recieving object that recieves chunks of ``T``.
-    receiver: Receiver<Result<Vec<T>, PanicUnwindErr>>,
+    /// The recieving object that recieves chunks of ``T``. Only ``None`` once ``drop`` has taken
+    /// it to disconnect the channel.
+    receiver: Option<Receiver<Result<Vec<T>, PanicUnwindErr>>>,
     /// The handle to the thread that was spawned to read ahead on the iterator.
     join_handle: Option<JoinHandle<()>>,
     /// The most recent chunk recieved as an iterator. Used to produce owned ``T`` objects from
@@ -98,7 +106,11 @@ where
             .expect("failed to spawn chunked read ahead thread");
 
         // Store the necessary objects on ``Self``
-        Self { receiver, join_handle: Some(join_handle), current_chunk: Vec::new().into_iter() }
+        Self {
+            receiver: Some(receiver),
+            join_handle: Some(join_handle),
+            current_chunk: Vec::new().into_iter(),
+        }
     }
 }
 
@@ -119,8 +131,8 @@ where
             // Current chunk didn't have anything left in it, so
             // Try to grab a new chunk (note that ``recv`` is blocking, so this will only return an
             // error if the sender has been dropped and there are no more elements in the channel.)
-
-            if let Ok(chunk_or_panic) = self.receiver.recv() {
+            let receiver = self.receiver.as_ref()?;
+            if let Ok(chunk_or_panic) = receiver.recv() {
                 // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
                 // and return its next value ( shutting down our reciever if the next value is None).
                 // if the new chunk is an Err, raise it to the main thread.
@@ -143,6 +155,22 @@ where
                 }
                 None
             }
+        }
+    }
+}
+
+impl<T> Drop for ChunkedReadAheadIterator<T>
+where
+    T: Send + 'static,
+{
+    fn drop(&mut self) {
+        // Disconnect before joining: a thread blocked sending into a full channel only wakes once
+        // the receiver is gone, so joining first would deadlock.
+        drop(self.receiver.take());
+        if let Some(join_handle) = self.join_handle.take() {
+            // Re-raising a panic from ``drop`` aborts the process if already unwinding, so the
+            // join result is discarded.
+            let _ = join_handle.join();
         }
     }
 }
@@ -188,6 +216,8 @@ mod tests {
     use rstest::rstest;
     use std::mem::drop;
     use std::panic;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     // use std::panic;
     use std::thread::sleep;
     use std::time::Duration;
@@ -429,5 +459,72 @@ mod tests {
             }
             assert_eq!(test_iter.next(), None);
         }
+    }
+
+    /// Infinite iterator that counts the items it has produced and sets a flag when dropped. The
+    /// read-ahead thread owns the inner iterator, so the flag being set means the thread has
+    /// finished with it.
+    struct DropFlaggingIter {
+        produced: Arc<AtomicUsize>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl DropFlaggingIter {
+        fn new() -> Self {
+            Self {
+                produced: Arc::new(AtomicUsize::new(0)),
+                dropped: Arc::new(AtomicBool::new(false)),
+            }
+        }
+    }
+
+    impl Iterator for DropFlaggingIter {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            Some(self.produced.fetch_add(1, Ordering::SeqCst))
+        }
+    }
+
+    impl Drop for DropFlaggingIter {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_dropping_mid_stream_stops_reader_thread_before_drop_returns() {
+        let inner = DropFlaggingIter::new();
+        let dropped = Arc::clone(&inner.dropped);
+        let mut chunked_iter = inner.read_ahead(4, 2);
+        for i in 0..10 {
+            assert_eq!(chunked_iter.next(), Some(i));
+        }
+
+        drop(chunked_iter);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_dropping_with_full_channel_stops_reader_thread_before_drop_returns() {
+        let inner = DropFlaggingIter::new();
+        let produced = Arc::clone(&inner.produced);
+        let dropped = Arc::clone(&inner.dropped);
+        let chunked_iter = inner.read_ahead(1, 1);
+
+        // With one single-item chunk buffered, producing a second item means the reader thread
+        // is about to block sending into the full channel.
+        while produced.load(Ordering::SeqCst) < 2 {
+            thread::yield_now();
+        }
+
+        drop(chunked_iter);
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_dropping_unconsumed_iterator_discards_reader_thread_panic() {
+        let chunked_iter = ExitFailingIter::new().read_ahead(8, 1);
+        drop(chunked_iter);
     }
 }
