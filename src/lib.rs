@@ -3,6 +3,7 @@
 //! refine the APIs around them, and provide well tested code to be used across projects.
 #![forbid(unsafe_code)]
 
+pub mod bam;
 pub mod io;
 pub mod iter;
 

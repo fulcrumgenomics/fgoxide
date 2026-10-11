@@ -13,10 +13,13 @@ documentation = "https://docs.rs/fgoxide"
 readme = "README.md"
 categories = ["rust-patterns"]
 keywords = ["utilities"]
-rust-version = "1.85"
+rust-version = "1.87"
 
 [dependencies]
 thiserror = "^2"
+
+# For BAM/SAM file handling
+rust-htslib = "0.51"
 
 # For auto-gzip handing of files
 flate2 = "^1"
