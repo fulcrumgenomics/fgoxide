@@ -84,10 +84,14 @@ where
             .spawn(move || {
                 'chunk_loop: loop {
                     let mut chunk = Vec::with_capacity(chunk_size);
+                    let mut exhausted = false;
                     for _ in 0..chunk_size {
                         match catch_unwind(AssertUnwindSafe(|| inner.by_ref().next())) {
                             Ok(Some(val)) => chunk.push(val),
-                            Ok(None) => break,
+                            Ok(None) => {
+                                exhausted = true;
+                                break;
+                            }
                             Err(e) => {
                                 let _x = sender.send(Ok(chunk));
                                 let _x = sender.send(Err(e));
@@ -95,10 +99,10 @@ where
                             }
                         }
                     }
-                    // If there is nothing in the chunk because the innner iterator is
-                    // exhausted, or we get a send error (implying the receiver has been
-                    // dropped), then exit the thread's main loop.
-                    if chunk.is_empty() || sender.send(Ok(chunk)).is_err() {
+                    // Stop once the inner iterator is exhausted, without polling it again (its
+                    // `next()` may panic after returning `None`), or once a send fails because
+                    // the receiver has been dropped.
+                    if (!chunk.is_empty() && sender.send(Ok(chunk)).is_err()) || exhausted {
                         break;
                     }
                 }
@@ -121,29 +125,21 @@ where
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
-        // Check if our current chunk has anything left in it
-        // If so, just return that result
-        // If not, see documentation on else block
-        let next_option = self.current_chunk.next();
-        if next_option.is_some() {
-            next_option
-        } else {
-            // Current chunk didn't have anything left in it, so
-            // Try to grab a new chunk (note that ``recv`` is blocking, so this will only return an
-            // error if the sender has been dropped and there are no more elements in the channel.)
+        loop {
+            // Return the next item from the current chunk, if it has any left.
+            if let Some(item) = self.current_chunk.next() {
+                return Some(item);
+            }
+            // Otherwise grab a new chunk (note that ``recv`` is blocking, so this will only return
+            // an error if the sender has been dropped and there are no more elements in the
+            // channel.)  A new chunk may be empty, e.g. when the inner iterator panics on the first
+            // item of a chunk, so keep receiving rather than treating it as the end of the stream.
+            // If the new chunk is an Err, raise it to the main thread.
             let receiver = self.receiver.as_ref()?;
             if let Ok(chunk_or_panic) = receiver.recv() {
-                // If the new chunk is present and Ok, convert it to an iterator, store it on ``self``,
-                // and return its next value ( shutting down our reciever if the next value is None).
-                // if the new chunk is an Err, raise it to the main thread.
                 match chunk_or_panic {
-                    Ok(next_chunk) => {
-                        self.current_chunk = next_chunk.into_iter();
-                        self.current_chunk.next()
-                    }
-                    Err(e) => {
-                        resume_unwind(e);
-                    }
+                    Ok(next_chunk) => self.current_chunk = next_chunk.into_iter(),
+                    Err(e) => resume_unwind(e),
                 }
             } else {
                 // join handle is not ``Copy`` or ``Clone`` and we need ownership of it to be able
@@ -153,7 +149,7 @@ where
                         resume_unwind(e)
                     }
                 }
-                None
+                return None;
             }
         }
     }
@@ -415,6 +411,61 @@ mod tests {
         }
         test_iter.next();
     }
+
+    /// A panic on the first item of a chunk is raised after the preceding items, rather than
+    /// ending the iteration early.
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(3)]
+    #[case(6)]
+    fn test_panic_occurring_at_chunk_start_raises(#[case] chunk_size: usize) {
+        assert_eq!(FAIL_POINT % chunk_size, 0);
+        let mut test_iter = FailingIter::new().read_ahead(chunk_size, 1);
+        for expected in 0..FAIL_POINT {
+            assert_eq!(test_iter.next(), Some(expected));
+        }
+        let result = panic::catch_unwind(AssertUnwindSafe(|| test_iter.next()));
+        let message = *result.unwrap_err().downcast::<&str>().unwrap();
+        assert_eq!(message, "expected error message");
+    }
+
+    /// Iterator that yields `0..len`, returns `None` once, and panics if polled again.
+    struct PanicAfterNoneIter {
+        next: usize,
+        len: usize,
+        exhausted: bool,
+    }
+
+    impl Iterator for PanicAfterNoneIter {
+        type Item = usize;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            assert!(!self.exhausted, "polled after returning None");
+            if self.next == self.len {
+                self.exhausted = true;
+                return None;
+            }
+            self.next += 1;
+            Some(self.next - 1)
+        }
+    }
+
+    /// The inner iterator is not polled again after it returns `None`, whether or not its length
+    /// is a multiple of the chunk size.
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(3)]
+    #[case(4)]
+    #[case(5)]
+    #[case(8)]
+    fn test_inner_iterator_is_not_polled_after_none(#[case] chunk_size: usize) {
+        let inner = PanicAfterNoneIter { next: 0, len: 5, exhausted: false };
+        let items: Vec<usize> = inner.read_ahead(chunk_size, 1).collect();
+        assert_eq!(items, vec![0, 1, 2, 3, 4]);
+    }
+
     /// Iterator struct that fails with a panic upon being dropped.
     struct ExitFailingIter {
         counter: usize,
